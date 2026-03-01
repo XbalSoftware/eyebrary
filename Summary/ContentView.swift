@@ -435,8 +435,8 @@ final class AppStore: ObservableObject {
         }
     }
 
-    private func seedDefaults() {
-        templates = [
+    private func factoryDefaultTemplates() -> [ConditionTemplate] {
+        [
             ConditionTemplate(
                 title: "DRY EYE CAUSED BY\nMEIBOMIAN GLAND\nDYSFUNCTION",
                 assessment: "Dry eye secondary to meibomian gland dysfunction/exposure OU.",
@@ -465,6 +465,33 @@ final class AppStore: ObservableObject {
                 order: 2
             )
         ]
+    }
+
+    private func seedDefaults() {
+        templates = factoryDefaultTemplates()
+    }
+
+    func resetToFactoryDefaults() {
+        // Remove persisted state
+        UserDefaults.standard.removeObject(forKey: templatesKey)
+        UserDefaults.standard.removeObject(forKey: letterheadsKey)
+        UserDefaults.standard.removeObject(forKey: historyKey)
+
+        // Delete any saved letterhead PDF files
+        let dir = letterheadsDirectoryURL()
+        if let items = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
+            for url in items {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+
+        // Reset in-memory state (these will repersist fresh)
+        history = []
+        letterheads = []
+        selectedLetterheadName = nil
+
+        templates = factoryDefaultTemplates()
+        ensureTemplateOrdering()
     }
 }
 
@@ -826,10 +853,44 @@ private struct NewPlanView: View {
 
                 Spacer()
 
-                Text("Letterhead: \(store.selectedLetterheadName ?? "none")")
+                Menu {
+                    Button("None") {
+                        store.selectedLetterheadName = nil
+                    }
+
+                    if !store.letterheads.isEmpty {
+                        Divider()
+
+                        ForEach(store.letterheads, id: \.self) { name in
+                            Button {
+                                store.selectedLetterheadName = name
+                            } label: {
+                                if store.selectedLetterheadName == name {
+                                    Label(name, systemImage: "checkmark")
+                                } else {
+                                    Text(name)
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "doc.text")
+                        Text(store.selectedLetterheadName ?? "Letterhead")
+                            .lineLimit(1)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.secondary.opacity(0.12))
+                    )
+                }
             }
             .padding([.horizontal, .bottom])
         }
@@ -1570,10 +1631,11 @@ private struct SettingsView: View {
     @State private var showExport = false
     @State private var exportDoc: TemplatesJSONDocument? = nil
 
-    @State private var showImport = false
+    @State private var showImportTemplatesSheet = false
     @State private var importMerge = true
 
     @State private var showLetterheadImporter = false
+    @State private var showFactoryResetConfirm = false
 
     var body: some View {
         List {
@@ -1593,7 +1655,7 @@ private struct SettingsView: View {
                 }
 
                 Button {
-                    showImport = true
+                    showImportTemplatesSheet = true
                 } label: {
                     Label("Import templates", systemImage: "square.and.arrow.down")
                 }
@@ -1637,31 +1699,48 @@ private struct SettingsView: View {
                     }
                 }
             }
+
+            Section {
+                Button(role: .destructive) {
+                    showFactoryResetConfirm = true
+                } label: {
+                    Label("Reset to Factory Defaults", systemImage: "arrow.counterclockwise")
+                }
+            } footer: {
+                Text("This will delete all custom templates, clear history, and remove any imported letterhead PDFs.")
+            }
         }
         .navigationTitle("Settings")
+        .alert("Reset to Factory Defaults?", isPresented: $showFactoryResetConfirm) {
+            Button("Reset", role: .destructive) {
+                store.resetToFactoryDefaults()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will remove all custom templates, clear history, and delete imported letterhead PDFs. This cannot be undone.")
+        }
         .fileExporter(
             isPresented: $showExport,
             document: exportDoc,
             contentType: .json,
             defaultFilename: "SummaryTemplates"
         ) { _ in }
-        .fileImporter(
-            isPresented: $showImport,
-            allowedContentTypes: [.json]
-        ) { result in
-            switch result {
-            case .success(let url):
-                do {
-                    let started = url.startAccessingSecurityScopedResource()
-                    defer { if started { url.stopAccessingSecurityScopedResource() } }
-                    let data = try Data(contentsOf: url)
-                    try store.importTemplatesJSON(data, merge: importMerge)
-                } catch {
-                    // ignore
+        .sheet(isPresented: $showImportTemplatesSheet) {
+            JSONDocumentPicker(
+                onPick: { url in
+                    do {
+                        let started = url.startAccessingSecurityScopedResource()
+                        defer { if started { url.stopAccessingSecurityScopedResource() } }
+                        let data = try Data(contentsOf: url)
+                        try store.importTemplatesJSON(data, merge: importMerge)
+                    } catch {
+                        // ignore
+                    }
+                },
+                onCancel: {
+                    // no-op
                 }
-            case .failure:
-                break
-            }
+            )
         }
         .fileImporter(
             isPresented: $showLetterheadImporter,
@@ -1698,6 +1777,45 @@ private struct TemplatesJSONDocument: FileDocument {
 
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
         FileWrapper(regularFileWithContents: data)
+    }
+}
+
+// MARK: - JSONDocumentPicker
+
+private struct JSONDocumentPicker: UIViewControllerRepresentable {
+    let onPick: (URL) -> Void
+    let onCancel: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onPick: onPick, onCancel: onCancel)
+    }
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.json], asCopy: true)
+        picker.allowsMultipleSelection = false
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let onPick: (URL) -> Void
+        let onCancel: () -> Void
+
+        init(onPick: @escaping (URL) -> Void, onCancel: @escaping () -> Void) {
+            self.onPick = onPick
+            self.onCancel = onCancel
+        }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            guard let url = urls.first else { return }
+            onPick(url)
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            onCancel()
+        }
     }
 }
 
