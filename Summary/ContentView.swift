@@ -36,9 +36,69 @@ struct ConditionTemplate: Identifiable, Codable, Equatable {
 
     var level: TemplateLevel
     var isPinned: Bool
+    /// If false, the template is hidden from the New Plan picker but remains available in Manage.
+    var isVisible: Bool = true
+    /// Controls display ordering within a level (lower first). Optional for backward compatibility.
+    var order: Int? = nil
 
     var createdAt: Date = Date()
     var updatedAt: Date = Date()
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, assessment, plan, level, isPinned, isVisible, order, createdAt, updatedAt
+    }
+
+    init(
+        id: UUID = UUID(),
+        title: String,
+        assessment: String,
+        plan: String,
+        level: TemplateLevel,
+        isPinned: Bool,
+        isVisible: Bool = true,
+        order: Int? = nil,
+        createdAt: Date = Date(),
+        updatedAt: Date = Date()
+    ) {
+        self.id = id
+        self.title = title
+        self.assessment = assessment
+        self.plan = plan
+        self.level = level
+        self.isPinned = isPinned
+        self.isVisible = isVisible
+        self.order = order
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(UUID.self, forKey: .id)
+        self.title = try c.decode(String.self, forKey: .title)
+        self.assessment = try c.decode(String.self, forKey: .assessment)
+        self.plan = try c.decode(String.self, forKey: .plan)
+        self.level = try c.decode(TemplateLevel.self, forKey: .level)
+        self.isPinned = try c.decode(Bool.self, forKey: .isPinned)
+        self.isVisible = try c.decodeIfPresent(Bool.self, forKey: .isVisible) ?? true
+        self.order = try c.decodeIfPresent(Int.self, forKey: .order)
+        self.createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        self.updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(title, forKey: .title)
+        try c.encode(assessment, forKey: .assessment)
+        try c.encode(plan, forKey: .plan)
+        try c.encode(level, forKey: .level)
+        try c.encode(isPinned, forKey: .isPinned)
+        try c.encode(isVisible, forKey: .isVisible)
+        try c.encodeIfPresent(order, forKey: .order)
+        try c.encode(createdAt, forKey: .createdAt)
+        try c.encode(updatedAt, forKey: .updatedAt)
+    }
 }
 
 struct PlanEntry: Identifiable, Codable, Equatable {
@@ -116,15 +176,73 @@ final class AppStore: ObservableObject {
 
     init() {
         loadTemplates()
+        ensureTemplateOrdering()
         loadLetterheads()
         loadHistory()
         if templates.isEmpty { seedDefaults() }
     }
 
+    // MARK: Ordering
+
+    private func ensureTemplateOrdering() {
+        // Assign stable ordering for any templates missing `order`.
+        var changed = false
+        for lvl in TemplateLevel.allCases {
+            let inLevel = templates
+                .filter { $0.level == lvl }
+                .sorted { a, b in
+                    // If both have order use it, otherwise fall back to pinned then title.
+                    let ao = a.order ?? Int.max
+                    let bo = b.order ?? Int.max
+                    if ao != bo { return ao < bo }
+                    if a.isPinned != b.isPinned { return a.isPinned && !b.isPinned }
+                    return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
+                }
+
+            var next = 0
+            for t in inLevel {
+                if let idx = templates.firstIndex(where: { $0.id == t.id }) {
+                    if templates[idx].order == nil {
+                        templates[idx].order = next
+                        changed = true
+                    }
+                    next += 1
+                }
+            }
+        }
+
+        if changed {
+            // Trigger persistence
+            templates = templates
+        }
+    }
+
+    func applyReorder(level: TemplateLevel, orderedIDs: [UUID]) {
+        // Reassign contiguous order values within a level.
+        for (i, id) in orderedIDs.enumerated() {
+            if let idx = templates.firstIndex(where: { $0.id == id && $0.level == level }) {
+                templates[idx].order = i
+                templates[idx].updatedAt = Date()
+            }
+        }
+    }
+
+    func nextOrderValue(for level: TemplateLevel) -> Int {
+        let maxOrder = templates
+            .filter { $0.level == level }
+            .compactMap { $0.order }
+            .max() ?? -1
+        return maxOrder + 1
+    }
+
     // MARK: Templates
 
     func addTemplate(_ t: ConditionTemplate) {
-        templates.insert(t, at: 0)
+        var new = t
+        if new.order == nil {
+            new.order = nextOrderValue(for: new.level)
+        }
+        templates.insert(new, at: 0)
     }
 
     func updateTemplate(_ t: ConditionTemplate) {
@@ -140,6 +258,12 @@ final class AppStore: ObservableObject {
     func togglePinned(id: UUID) {
         guard let idx = templates.firstIndex(where: { $0.id == id }) else { return }
         templates[idx].isPinned.toggle()
+        templates[idx].updatedAt = Date()
+    }
+
+    func toggleVisible(id: UUID) {
+        guard let idx = templates.firstIndex(where: { $0.id == id }) else { return }
+        templates[idx].isVisible.toggle()
         templates[idx].updatedAt = Date()
     }
 
@@ -318,21 +442,27 @@ final class AppStore: ObservableObject {
                 assessment: "Dry eye secondary to meibomian gland dysfunction/exposure OU.",
                 plan: "Hot compresses 5–10 minutes daily, then gentle lid massage. Consider lid hygiene and preservative-free artificial tears as needed. If symptoms persist, consider anti-inflammatory dry eye treatment.",
                 level: .basic,
-                isPinned: true
+                isPinned: true,
+                isVisible: true,
+                order: 0
             ),
             ConditionTemplate(
                 title: "RISK OF GLAUCOMA",
                 assessment: "Glaucoma suspect based on optic nerve/IOP risk factors.",
                 plan: "Monitor with periodic IOP checks, optic nerve/OCT imaging, and visual field testing. Escalate to treatment/referral if progression or consistently elevated pressures.",
                 level: .basic,
-                isPinned: true
+                isPinned: true,
+                isVisible: true,
+                order: 1
             ),
             ConditionTemplate(
                 title: "GLAUCOMA",
                 assessment: "Primary open-angle glaucoma.",
                 plan: "Continue/Initiate IOP-lowering therapy as indicated. Monitor with IOP, OCT, and VF at appropriate intervals. Consider ophthalmology co-management.",
                 level: .advanced,
-                isPinned: false
+                isPinned: false,
+                isVisible: true,
+                order: 2
             )
         ]
     }
@@ -372,6 +502,9 @@ private struct NewPlanView: View {
     @State private var level: TemplateLevel = .basic
     @State private var selectedTemplateID: UUID? = nil
 
+    // Sidebar search (New Plan)
+    @State private var query: String = ""
+
     @State private var patientName: String = ""
     @State private var planEntries: [PlanEntry] = []
 
@@ -382,15 +515,41 @@ private struct NewPlanView: View {
     @State private var showHistorySheet: Bool = false
 
     private var pinned: [ConditionTemplate] {
-        store.templates
-            .filter { $0.isPinned && $0.level == level }
-            .sorted { $0.updatedAt > $1.updatedAt }
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = store.templates
+            .filter { $0.isPinned && $0.isVisible && $0.level == level }
+
+        let filtered = q.isEmpty ? base : base.filter {
+            $0.title.localizedCaseInsensitiveContains(q) ||
+            $0.assessment.localizedCaseInsensitiveContains(q) ||
+            $0.plan.localizedCaseInsensitiveContains(q)
+        }
+
+        return filtered.sorted { (a, b) in
+            let ao = a.order ?? Int.max
+            let bo = b.order ?? Int.max
+            if ao != bo { return ao < bo }
+            return a.updatedAt > b.updatedAt
+        }
     }
 
     private var others: [ConditionTemplate] {
-        store.templates
-            .filter { !$0.isPinned && $0.level == level }
-            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = store.templates
+            .filter { !$0.isPinned && $0.isVisible && $0.level == level }
+
+        let filtered = q.isEmpty ? base : base.filter {
+            $0.title.localizedCaseInsensitiveContains(q) ||
+            $0.assessment.localizedCaseInsensitiveContains(q) ||
+            $0.plan.localizedCaseInsensitiveContains(q)
+        }
+
+        return filtered.sorted { (a, b) in
+            let ao = a.order ?? Int.max
+            let bo = b.order ?? Int.max
+            if ao != bo { return ao < bo }
+            return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
+        }
     }
 
     var body: some View {
@@ -457,6 +616,30 @@ private struct NewPlanView: View {
 
     private var sidebar: some View {
         VStack(spacing: 12) {
+            HStack {
+                Spacer()
+                Text("Conditions")
+                    .font(.system(size: 20, weight: .bold))
+                Spacer()
+            }
+            .overlay(alignment: .trailing) {
+                // This uses the system split view toggle already provided by NavigationSplitView
+                // so it remains functional.
+                EmptyView()
+            }
+            .padding(.horizontal)
+            .padding(.top, 8)
+            // Place the built-in split view sidebar toggle button at the top-right
+            // (this will appear in the navigation bar area for the sidebar column)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        // no-op; actual toggle is provided by the system
+                    } label: {
+                        EmptyView()
+                    }
+                }
+            }
             Picker("", selection: $level) {
                 ForEach(TemplateLevel.allCases) { lvl in
                     Text(lvl.displayName).tag(lvl)
@@ -464,9 +647,45 @@ private struct NewPlanView: View {
             }
             .pickerStyle(.segmented)
             .padding(.horizontal)
+
+            // Search (placed under Basic/Advanced)
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+
+                TextField("Search", text: $query)
+                    .textFieldStyle(.plain)
+                    .autocorrectionDisabled(true)
+
+                if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Button {
+                        query = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.secondary.opacity(0.15))
+            )
+            .padding(.horizontal)
             .padding(.top, 8)
 
             List(selection: $selectedTemplateID) {
+                Section {
+                    Button {
+                        addOtherEntry()
+                        selectedTemplateID = nil
+                    } label: {
+                        Label("Other", systemImage: "plus.circle")
+                    }
+                }
+
                 if !pinned.isEmpty {
                     Section("Pinned") {
                         ForEach(pinned) { t in
@@ -504,16 +723,6 @@ private struct NewPlanView: View {
                                 }
                             }
                         }
-                    }
-                }
-
-                Section {
-                    Button {
-                        addOtherEntry()
-                        selectedTemplateID = nil
-                    } label: {
-                        Label("Other", systemImage: "plus.circle")
-                            .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -590,9 +799,8 @@ private struct NewPlanView: View {
                         }
                     }
                 }
-                .toolbar {
-                    ToolbarItem(placement: .topBarLeading) { EditButton() }
-                }
+                // Keep reorder handles visible without a separate Edit button
+                .environment(\.editMode, .constant(.active))
             }
 
             HStack {
@@ -803,18 +1011,23 @@ private struct ManageTemplatesView: View {
 
     @State private var query: String = ""
     @State private var level: TemplateLevel = .basic
-
-    @State private var presentingEditor = false
-    @State private var editorMode: TemplateEditorMode = .create
+    @State private var selectedID: UUID? = nil
+    @State private var editMode: EditMode = .inactive
+    @State private var pendingDeleteTemplateID: UUID? = nil
+    @State private var showDeleteTemplateConfirm: Bool = false
 
     private var filtered: [ConditionTemplate] {
         let base = store.templates.filter { $0.level == level }
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let list: [ConditionTemplate]
 
+        let list: [ConditionTemplate]
         if q.isEmpty {
             list = base.sorted { a, b in
+                // Use ordering first; keep pinned grouped visually above non-pinned.
                 if a.isPinned != b.isPinned { return a.isPinned && !b.isPinned }
+                let ao = a.order ?? Int.max
+                let bo = b.order ?? Int.max
+                if ao != bo { return ao < bo }
                 return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
             }
         } else {
@@ -823,93 +1036,378 @@ private struct ManageTemplatesView: View {
                 $0.assessment.localizedCaseInsensitiveContains(q) ||
                 $0.plan.localizedCaseInsensitiveContains(q)
             }
-            .sorted { $0.updatedAt > $1.updatedAt }
+            .sorted { a, b in
+                if a.isPinned != b.isPinned { return a.isPinned && !b.isPinned }
+                let ao = a.order ?? Int.max
+                let bo = b.order ?? Int.max
+                if ao != bo { return ao < bo }
+                return a.updatedAt > b.updatedAt
+            }
         }
-
         return list
     }
 
+    private var selectedTemplate: ConditionTemplate? {
+        guard let id = selectedID else { return nil }
+        return store.template(id: id)
+    }
+
     var body: some View {
-        List {
-            Section {
-                ForEach(filtered) { t in
-                    HStack(alignment: .top, spacing: 12) {
-                        Button {
-                            store.togglePinned(id: t.id)
-                        } label: {
-                            Image(systemName: t.isPinned ? "pin.fill" : "pin")
-                                .foregroundStyle(t.isPinned ? .yellow : .secondary)
-                        }
-                        .buttonStyle(.plain)
+        NavigationSplitView {
+            manageSidebar
+        } detail: {
+            manageDetail
+        }
+        .navigationTitle("Manage Templates")
+        .alert("Delete template?", isPresented: $showDeleteTemplateConfirm) {
+            Button("Delete", role: .destructive) {
+                if let id = pendingDeleteTemplateID,
+                   let idx = store.templates.firstIndex(where: { $0.id == id }) {
+                    store.templates.remove(at: idx)
+                    if selectedID == id { selectedID = nil }
+                }
+                pendingDeleteTemplateID = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingDeleteTemplateID = nil
+            }
+        } message: {
+            Text("This will permanently delete the template.")
+        }
+    }
 
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(t.title)
-                                .font(.headline)
-                                .lineLimit(2)
+    private var manageSidebar: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 12) {
+                EditButton()
+                    .font(.system(size: 16, weight: .semibold))
 
-                            if !t.assessment.isEmpty {
-                                Text(t.assessment)
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
+                Spacer()
 
-                            if !t.plan.isEmpty {
-                                Text(t.plan)
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                        }
+                Text("Templates")
+                    .font(.system(size: 20, weight: .bold))
 
-                        Spacer()
+                Spacer()
 
-                        Button("Edit") {
-                            editorMode = .edit(id: t.id)
-                            presentingEditor = true
-                        }
-                        .buttonStyle(.bordered)
+                Button {
+                    createNewTemplate()
+                } label: {
+                    Label("New Template", systemImage: "plus")
+                        .labelStyle(.iconOnly)
+                        .font(.system(size: 18, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal)
+            .padding(.top, 8)
+
+            Picker("", selection: $level) {
+                ForEach(TemplateLevel.allCases) { lvl in
+                    Text(lvl.displayName).tag(lvl)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal)
+
+            // Search (placed under Basic/Advanced)
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+
+                TextField("Search", text: $query)
+                    .textFieldStyle(.plain)
+                    .autocorrectionDisabled(true)
+
+                if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Button {
+                        query = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
                     }
-                    .padding(.vertical, 6)
+                    .buttonStyle(.plain)
                 }
-                .onDelete { offsets in
-                    store.deleteTemplates(at: offsets, in: filtered)
-                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.secondary.opacity(0.15))
+            )
+            .padding(.horizontal)
+            .padding(.top, 8)
 
+            List(selection: $selectedID) {
                 if filtered.isEmpty {
                     ContentUnavailableView(
                         "No templates",
                         systemImage: "doc.text",
-                        description: Text("Add templates with the + button.")
+                        description: Text("Tap + to add a template.")
                     )
+                    .listRowBackground(Color.clear)
+                } else {
+                    ForEach(filtered) { t in
+                        HStack(spacing: 10) {
+                            if editMode == .active {
+                                Button {
+                                    store.toggleVisible(id: t.id)
+                                } label: {
+                                    Image(systemName: t.isVisible ? "eye" : "eye.slash")
+                                        .foregroundStyle(t.isVisible ? Color.secondary : Color.secondary.opacity(0.6))
+                                }
+                                .buttonStyle(.plain)
+
+                                Button {
+                                    store.togglePinned(id: t.id)
+                                } label: {
+                                    Image(systemName: t.isPinned ? "pin.fill" : "pin")
+                                        .foregroundStyle(t.isPinned ? .yellow : .secondary)
+                                }
+                                .buttonStyle(.plain)
+                            }
+
+                            Text(t.title)
+                                .font(.subheadline)
+                                .lineLimit(2)
+
+                            Spacer()
+
+                            if editMode == .active {
+                                Button {
+                                    pendingDeleteTemplateID = t.id
+                                    showDeleteTemplateConfirm = true
+                                } label: {
+                                    Image(systemName: "minus.circle.fill")
+                                        .foregroundStyle(.red)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture { selectedID = t.id }
+                    }
+                    .onMove { from, to in
+                        guard editMode == .active else { return }
+
+                        // Only allow reordering when not searching.
+                        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard q.isEmpty else { return }
+
+                        var ids = filtered.map { $0.id }
+                        ids.move(fromOffsets: from, toOffset: to)
+                        store.applyReorder(level: level, orderedIDs: ids)
+                    }
                 }
             }
         }
-        .navigationTitle("Manage")
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Picker("", selection: $level) {
+        .environment(\.editMode, $editMode)
+    }
+
+    private var manageDetail: some View {
+        Group {
+            if let t = selectedTemplate {
+                ManageTemplateDetail(template: t, currentLevel: $level)
+            } else {
+                ContentUnavailableView(
+                    "Select a template",
+                    systemImage: "doc.text.magnifyingglass",
+                    description: Text("Choose a template from the left to edit it.")
+                )
+            }
+        }
+    }
+
+    private func createNewTemplate() {
+        let new = ConditionTemplate(
+            title: "New Condition",
+            assessment: "",
+            plan: "",
+            level: level,
+            isPinned: false,
+            isVisible: true,
+            order: store.nextOrderValue(for: level),
+            createdAt: Date(),
+            updatedAt: Date()
+        )
+        store.addTemplate(new)
+        selectedID = new.id
+    }
+}
+private struct ManageTemplateDetail: View {
+    @EnvironmentObject private var store: AppStore
+
+    let template: ConditionTemplate
+    @Binding var currentLevel: TemplateLevel
+
+    @State private var title: String = ""
+    @State private var assessment: String = ""
+    @State private var plan: String = ""
+    @State private var level: TemplateLevel = .basic
+
+    @State private var didLoad = false
+
+    @State private var isEditing: Bool = false
+
+    @State private var originalTitle: String = ""
+    @State private var originalAssessment: String = ""
+    @State private var originalPlan: String = ""
+    @State private var originalLevel: TemplateLevel = .basic
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                TextField("Condition name", text: $title)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.title3)
+                    .disabled(!isEditing)
+
+                Spacer()
+
+                if isEditing {
+                    Button("Done") {
+                        commitEdits()
+                        isEditing = false
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button("Cancel") {
+                        discardEdits()
+                        isEditing = false
+                    }
+                    .buttonStyle(.bordered)
+                } else {
+                    Button("Edit") {
+                        beginEditing()
+                        isEditing = true
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+            .padding(.horizontal)
+            .padding(.top, 8)
+
+            HStack {
+                Text("Level")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Picker("Level", selection: $level) {
                     ForEach(TemplateLevel.allCases) { lvl in
                         Text(lvl.displayName).tag(lvl)
                     }
                 }
+                .disabled(!isEditing)
                 .pickerStyle(.segmented)
-                .frame(maxWidth: 240)
+                .frame(maxWidth: 360)
             }
+            .padding(.horizontal)
 
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    editorMode = .create
-                    presentingEditor = true
-                } label: {
-                    Image(systemName: "plus")
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Default Assessment")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextEditor(text: $assessment)
+                        .disabled(!isEditing)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(.secondary.opacity(0.35))
+                        )
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Default Plan")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextEditor(text: $plan)
+                        .disabled(!isEditing)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(.secondary.opacity(0.35))
+                        )
                 }
             }
+            .padding(.horizontal)
+
+            Spacer()
         }
-        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .automatic))
-        .sheet(isPresented: $presentingEditor) {
-            TemplateEditorSheet(mode: editorMode, defaultLevel: level)
+        .onAppear {
+            loadIfNeeded()
+            isEditing = false
         }
+        .onChange(of: template.id) { _, _ in
+            didLoad = false
+            isEditing = false
+            loadIfNeeded()
+        }
+        .onChange(of: level) { _, _ in
+            currentLevel = level
+        }
+    }
+
+    private func loadIfNeeded() {
+        guard !didLoad else { return }
+        didLoad = true
+
+        title = template.title
+        assessment = template.assessment
+        plan = template.plan
+        level = template.level
+        currentLevel = template.level
+
+        // Capture originals so Cancel can revert.
+        originalTitle = template.title
+        originalAssessment = template.assessment
+        originalPlan = template.plan
+        originalLevel = template.level
+    }
+
+    private func beginEditing() {
+        // Refresh originals from the current stored version.
+        guard let t = store.template(id: template.id) else { return }
+        originalTitle = t.title
+        originalAssessment = t.assessment
+        originalPlan = t.plan
+        originalLevel = t.level
+
+        title = t.title
+        assessment = t.assessment
+        plan = t.plan
+        level = t.level
+        currentLevel = t.level
+    }
+
+    private func discardEdits() {
+        title = originalTitle
+        assessment = originalAssessment
+        plan = originalPlan
+        level = originalLevel
+        currentLevel = originalLevel
+    }
+
+    private func commitEdits() {
+        guard didLoad else { return }
+        guard var t = store.template(id: template.id) else { return }
+
+        let previousLevel = t.level
+        t.title = title
+        t.assessment = assessment
+        t.plan = plan
+
+        if previousLevel != level {
+            t.level = level
+            t.order = store.nextOrderValue(for: level)
+        }
+
+        t.updatedAt = Date()
+        store.updateTemplate(t)
+
+        // Update originals after saving.
+        originalTitle = t.title
+        originalAssessment = t.assessment
+        originalPlan = t.plan
+        originalLevel = t.level
+        currentLevel = t.level
     }
 }
 
@@ -931,6 +1429,7 @@ private struct TemplateEditorSheet: View {
 
     @State private var level: TemplateLevel = .basic
     @State private var isPinned: Bool = false
+    @State private var isVisible: Bool = true
 
     @State private var loadedID: UUID? = nil
 
@@ -952,6 +1451,7 @@ private struct TemplateEditorSheet: View {
                 }
 
                 Section {
+                    Toggle("Visible in New Plan", isOn: $isVisible)
                     Toggle("Pin to top", isOn: $isPinned)
                 }
 
@@ -997,6 +1497,7 @@ private struct TemplateEditorSheet: View {
                 loadedID = UUID()
                 self.level = defaultLevel
                 self.isPinned = false
+                self.isVisible = true
                 self.title = ""
                 self.assessment = ""
                 self.plan = ""
@@ -1010,6 +1511,7 @@ private struct TemplateEditorSheet: View {
             plan = t.plan
             level = t.level
             isPinned = t.isPinned
+            isVisible = t.isVisible
         }
     }
 
@@ -1026,6 +1528,8 @@ private struct TemplateEditorSheet: View {
                 plan: tPlan,
                 level: level,
                 isPinned: isPinned,
+                isVisible: isVisible,
+                order: store.nextOrderValue(for: level),
                 createdAt: Date(),
                 updatedAt: Date()
             )
@@ -1038,6 +1542,7 @@ private struct TemplateEditorSheet: View {
             existing.plan = tPlan
             existing.level = level
             existing.isPinned = isPinned
+            existing.isVisible = isVisible
             existing.updatedAt = Date()
             store.updateTemplate(existing)
         }
