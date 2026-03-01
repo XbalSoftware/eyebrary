@@ -506,10 +506,10 @@ private struct NewPlanView: View {
     @State private var query: String = ""
 
     @State private var patientName: String = ""
+    @State private var reportDate: Date = Date()
     @State private var planEntries: [PlanEntry] = []
 
-    @State private var showShareSheet = false
-    @State private var exportURL: URL? = nil
+    @State private var shareItem: ShareItem? = nil
     @State private var pendingDeleteEntryID: UUID? = nil
     @State private var showDeleteWarning: Bool = false
     @State private var showHistorySheet: Bool = false
@@ -574,12 +574,8 @@ private struct NewPlanView: View {
                 }
             }
         }
-        .sheet(isPresented: $showShareSheet) {
-            if let url = exportURL {
-                ActivityView(items: [url])
-            } else {
-                ActivityView(items: [])
-            }
+        .sheet(item: $shareItem) { item in
+            ActivityView(items: [item.url])
         }
         .sheet(isPresented: $showHistorySheet) {
             HistorySheet(
@@ -730,10 +726,20 @@ private struct NewPlanView: View {
     }
     private var detail: some View {
         VStack(alignment: .leading, spacing: 12) {
-            TextField("Patient Name", text: $patientName)
-                .textFieldStyle(.roundedBorder)
-                .padding(.horizontal)
-                .padding(.top, 8)
+            HStack(spacing: 12) {
+                TextField("Patient Name", text: $patientName)
+                    .textFieldStyle(.roundedBorder)
+
+                DatePicker(
+                    "Date",
+                    selection: $reportDate,
+                    displayedComponents: [.date]
+                )
+                .datePickerStyle(.compact)
+                .labelsHidden()
+            }
+            .padding(.horizontal)
+            .padding(.top, 8)
 
             if planEntries.isEmpty {
                 ContentUnavailableView(
@@ -920,13 +926,13 @@ private struct NewPlanView: View {
         do {
             let url = try PlanPDFBuilder.buildPDF(
                 patientName: patientName,
+                reportDate: reportDate,
                 templates: exportTemplates,
                 letterheadURL: store.selectedLetterheadName.map { store.letterheadURL(named: $0) }
             )
-            exportURL = url
-            showShareSheet = true
+            shareItem = ShareItem(url: url)
         } catch {
-            // ignore for now
+            print("PDF export failed:", error)
         }
     }
 }
@@ -1691,7 +1697,7 @@ private struct TemplatesJSONDocument: FileDocument {
 // MARK: - PDF generation
 
 enum PlanPDFBuilder {
-    static func buildPDF(patientName: String, templates: [ConditionTemplate], letterheadURL: URL?) throws -> URL {
+    static func buildPDF(patientName: String, reportDate: Date, templates: [ConditionTemplate], letterheadURL: URL?) throws -> URL {
         let filenamePatient = patientName.trimmingCharacters(in: .whitespacesAndNewlines)
         let safeName = filenamePatient.isEmpty ? "Patient" : filenamePatient
         let outURL = FileManager.default.temporaryDirectory
@@ -1701,27 +1707,15 @@ enum PlanPDFBuilder {
         let renderer = UIGraphicsPDFRenderer(bounds: pageRect)
 
         let data = renderer.pdfData { ctx in
-            var y: CGFloat = 0
+            let marginX: CGFloat = 54
+            let contentWidth = pageRect.width - 2 * marginX
+            let contentTopY: CGFloat = 112
+            let footerY: CGFloat = pageRect.height - 60
+            let pageBreakThreshold: CGFloat = pageRect.height - 110
 
-            func beginPage() {
-                ctx.beginPage()
-
-                // Background letterhead, if provided
-                if let bgURL = letterheadURL,
-                   let doc = PDFDocument(url: bgURL),
-                   let page = doc.page(at: 0) {
-                    page.draw(with: .mediaBox, to: ctx.cgContext)
-                }
-
-                // Content start
-                y = 120
-            }
-
-            func draw(_ text: String, font: UIFont, x: CGFloat, y: CGFloat, width: CGFloat) -> CGFloat {
-                let attrs: [NSAttributedString.Key: Any] = [
-                    .font: font
-                ]
-
+            // Shared measurement/drawing helpers
+            func textHeight(_ text: String, font: UIFont, width: CGFloat) -> CGFloat {
+                let attrs: [NSAttributedString.Key: Any] = [.font: font]
                 let nsText = text as NSString
                 let rect = nsText.boundingRect(
                     with: CGSize(width: width, height: 10_000),
@@ -1729,51 +1723,255 @@ enum PlanPDFBuilder {
                     attributes: attrs,
                     context: nil
                 )
-
-                let drawRect = CGRect(x: x, y: y, width: width, height: ceil(rect.height))
-                nsText.draw(in: drawRect, withAttributes: attrs)
-                return y + ceil(rect.height)
+                return ceil(rect.height)
             }
 
-            beginPage()
+            func drawAligned(_ text: String, font: UIFont, x: CGFloat, y: CGFloat, width: CGFloat, alignment: NSTextAlignment) -> CGFloat {
+                let para = NSMutableParagraphStyle()
+                para.alignment = alignment
+                para.lineBreakMode = .byWordWrapping
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: font,
+                    .paragraphStyle: para
+                ]
+                let nsText = text as NSString
+                let h = textHeight(text, font: font, width: width)
+                let drawRect = CGRect(x: x, y: y, width: width, height: h)
+                nsText.draw(in: drawRect, withAttributes: attrs)
+                return y + h
+            }
 
-            let marginX: CGFloat = 54
-            let contentWidth = pageRect.width - 2 * marginX
+            // Build pages by estimating block heights (two-pass so we know total page count)
+            struct Block {
+                enum Kind {
+                    case docTitle
+                    case patientDateRow
+                    case condTitleBox
+                    case label
+                    case body
+                }
+                let kind: Kind
+                let leftText: String
+                let rightText: String? // used only for patientDateRow
+                let font: UIFont
+                let topPad: CGFloat
+                let bottomPad: CGFloat
+            }
 
-            y = draw("Treatment Plan", font: .boldSystemFont(ofSize: 18), x: marginX, y: y, width: contentWidth) + 10
+            var blocks: [Block] = []
 
-            let patientLine = filenamePatient.isEmpty ? "Patient: __________________" : "Patient: \(filenamePatient)"
-            y = draw(patientLine, font: .systemFont(ofSize: 12), x: marginX, y: y, width: contentWidth) + 14
+            blocks.append(
+                Block(
+                    kind: .docTitle,
+                    leftText: "Treatment Plan",
+                    rightText: nil,
+                    font: .boldSystemFont(ofSize: 17),
+                    topPad: 0,
+                    bottomPad: 8
+                )
+            )
 
-            let dateLine = "Date: \(Date().formatted(date: .abbreviated, time: .omitted))"
-            y = draw(dateLine, font: .systemFont(ofSize: 12), x: marginX, y: y, width: contentWidth) + 18
+            let trimmedPatient = patientName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let patientLeft = trimmedPatient.isEmpty ? "Patient: __________________" : "Patient: \(trimmedPatient)"
+            let dateRight = "Date of Exam: \(reportDate.formatted(date: .abbreviated, time: .omitted))"
+            blocks.append(
+                Block(
+                    kind: .patientDateRow,
+                    leftText: patientLeft,
+                    rightText: dateRight,
+                    font: .systemFont(ofSize: 12),
+                    topPad: 0,
+                    bottomPad: 14
+                )
+            )
 
             for t in templates {
-                if y > pageRect.height - 120 {
-                    beginPage()
-                }
-
-                y = draw(t.title, font: .boldSystemFont(ofSize: 13), x: marginX, y: y, width: contentWidth) + 6
+                blocks.append(
+                    Block(
+                        kind: .condTitleBox,
+                        leftText: t.title,
+                        rightText: nil,
+                        font: .boldSystemFont(ofSize: 12),
+                        topPad: 0,
+                        bottomPad: 10
+                    )
+                )
 
                 let a = t.assessment.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !a.isEmpty {
-                    y = draw("Assessment:", font: .boldSystemFont(ofSize: 11), x: marginX, y: y, width: contentWidth) + 2
-                    y = draw(a, font: .systemFont(ofSize: 11), x: marginX, y: y, width: contentWidth) + 8
+                    blocks.append(
+                        Block(
+                            kind: .label,
+                            leftText: "Assessment:",
+                            rightText: nil,
+                            font: .boldSystemFont(ofSize: 11),
+                            topPad: 0,
+                            bottomPad: 2
+                        )
+                    )
+                    blocks.append(
+                        Block(
+                            kind: .body,
+                            leftText: a,
+                            rightText: nil,
+                            font: .systemFont(ofSize: 11),
+                            topPad: 0,
+                            bottomPad: 8
+                        )
+                    )
                 }
 
                 let p = t.plan.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !p.isEmpty {
-                    y = draw("Plan:", font: .boldSystemFont(ofSize: 11), x: marginX, y: y, width: contentWidth) + 2
-                    y = draw(p, font: .systemFont(ofSize: 11), x: marginX, y: y, width: contentWidth) + 14
+                    blocks.append(
+                        Block(
+                            kind: .label,
+                            leftText: "Plan:",
+                            rightText: nil,
+                            font: .boldSystemFont(ofSize: 11),
+                            topPad: 0,
+                            bottomPad: 2
+                        )
+                    )
+                    blocks.append(
+                        Block(
+                            kind: .body,
+                            leftText: p,
+                            rightText: nil,
+                            font: .systemFont(ofSize: 11),
+                            topPad: 0,
+                            bottomPad: 14
+                        )
+                    )
                 }
+            }
+
+            // Paginate
+            var pages: [[Block]] = [[]]
+            var y: CGFloat = contentTopY
+
+            func startNewPage() {
+                pages.append([])
+                y = contentTopY
+            }
+
+            let halfWidth = (contentWidth - 12) / 2
+
+            func blockHeight(_ b: Block) -> CGFloat {
+                switch b.kind {
+                case .patientDateRow:
+                    let leftH = textHeight(b.leftText, font: b.font, width: halfWidth)
+                    let rightH = textHeight(b.rightText ?? "", font: b.font, width: halfWidth)
+                    return b.topPad + max(leftH, rightH) + b.bottomPad
+
+                case .condTitleBox:
+                    // Box padding around title text
+                    let innerPadY: CGFloat = 6
+                    let h = textHeight(b.leftText, font: b.font, width: contentWidth - 18)
+                    return b.topPad + (h + innerPadY * 2) + b.bottomPad
+
+                default:
+                    return b.topPad + textHeight(b.leftText, font: b.font, width: contentWidth) + b.bottomPad
+                }
+            }
+
+            for b in blocks {
+                let h = blockHeight(b)
+                if y + h > pageBreakThreshold {
+                    startNewPage()
+                }
+                pages[pages.count - 1].append(b)
+                y += h
+            }
+
+            let totalPages = pages.count
+
+            // Render pages
+            for (pageIndex, pageBlocks) in pages.enumerated() {
+                ctx.beginPage()
+
+                // Background letterhead, if provided
+                if let bgURL = letterheadURL,
+                   let doc = PDFDocument(url: bgURL),
+                   let page = doc.page(at: 0) {
+                    // PDF pages use a bottom-left origin; UIGraphicsPDFRenderer uses top-left.
+                    // Flip only while drawing the background so it stays upright.
+                    ctx.cgContext.saveGState()
+                    ctx.cgContext.translateBy(x: 0, y: pageRect.height)
+                    ctx.cgContext.scaleBy(x: 1, y: -1)
+                    page.draw(with: .mediaBox, to: ctx.cgContext)
+                    ctx.cgContext.restoreGState()
+                }
+
+                var yCursor: CGFloat = contentTopY
+                let halfWidth = (contentWidth - 12) / 2
+
+                for b in pageBlocks {
+                    yCursor += b.topPad
+
+                    switch b.kind {
+                    case .docTitle:
+                        yCursor = drawAligned(b.leftText, font: b.font, x: marginX, y: yCursor, width: contentWidth, alignment: .center)
+
+                    case .patientDateRow:
+                        _ = drawAligned(b.leftText, font: b.font, x: marginX, y: yCursor, width: halfWidth, alignment: .left)
+                        _ = drawAligned(b.rightText ?? "", font: b.font, x: marginX + halfWidth + 12, y: yCursor, width: halfWidth, alignment: .right)
+                        // Advance by the max of the two heights
+                        let leftH = textHeight(b.leftText, font: b.font, width: halfWidth)
+                        let rightH = textHeight(b.rightText ?? "", font: b.font, width: halfWidth)
+                        yCursor += max(leftH, rightH)
+
+                    case .condTitleBox:
+                        let innerPadX: CGFloat = 9
+                        let innerPadY: CGFloat = 6
+                        let titleH = textHeight(b.leftText, font: b.font, width: contentWidth - innerPadX * 2)
+                        let boxH = titleH + innerPadY * 2
+                        let boxRect = CGRect(x: marginX, y: yCursor, width: contentWidth, height: boxH)
+                        ctx.cgContext.saveGState()
+                        ctx.cgContext.setLineWidth(1)
+                        ctx.cgContext.setStrokeColor(UIColor.secondaryLabel.withAlphaComponent(0.35).cgColor)
+                        let path = UIBezierPath(roundedRect: boxRect, cornerRadius: 8)
+                        ctx.cgContext.addPath(path.cgPath)
+                        ctx.cgContext.strokePath()
+                        ctx.cgContext.restoreGState()
+
+                        _ = drawAligned(
+                            b.leftText,
+                            font: b.font,
+                            x: marginX + innerPadX,
+                            y: yCursor + innerPadY,
+                            width: contentWidth - innerPadX * 2,
+                            alignment: .left
+                        )
+                        yCursor += boxH
+
+                    case .label:
+                        yCursor = drawAligned(b.leftText, font: b.font, x: marginX, y: yCursor, width: contentWidth, alignment: .left)
+
+                    case .body:
+                        yCursor = drawAligned(b.leftText, font: b.font, x: marginX, y: yCursor, width: contentWidth, alignment: .left)
+                    }
+
+                    yCursor += b.bottomPad
+                }
+
+                // Footer page numbering (bottom-right)
+                let footerText = "Page \(pageIndex + 1) of \(totalPages)"
+                let footerFont = UIFont.systemFont(ofSize: 10)
+                _ = drawAligned(footerText, font: footerFont, x: marginX, y: footerY, width: contentWidth, alignment: .right)
             }
         }
 
-        try data.write(to: outURL, options: .atomic)
+        try data.write(to: outURL, options: [.atomic])
         return outURL
     }
 }
 
+
+private struct ShareItem: Identifiable {
+    let id = UUID()
+    let url: URL
+}
 // MARK: - Share sheet
 
 private struct ActivityView: UIViewControllerRepresentable {
