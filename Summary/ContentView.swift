@@ -505,6 +505,7 @@ private struct NewPlanView: View {
     // Sidebar search (New Plan)
     @State private var query: String = ""
 
+    @State private var reportTitle: String = "Eye Exam Summary"
     @State private var patientName: String = ""
     @State private var reportDate: Date = Date()
     @State private var planEntries: [PlanEntry] = []
@@ -726,17 +727,22 @@ private struct NewPlanView: View {
     }
     private var detail: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 12) {
-                TextField("Patient Name", text: $patientName)
+            VStack(spacing: 10) {
+                TextField("Report Title", text: $reportTitle)
                     .textFieldStyle(.roundedBorder)
 
-                DatePicker(
-                    "Date",
-                    selection: $reportDate,
-                    displayedComponents: [.date]
-                )
-                .datePickerStyle(.compact)
-                .labelsHidden()
+                HStack(spacing: 12) {
+                    TextField("Patient Name", text: $patientName)
+                        .textFieldStyle(.roundedBorder)
+
+                    DatePicker(
+                        "Date",
+                        selection: $reportDate,
+                        displayedComponents: [.date]
+                    )
+                    .datePickerStyle(.compact)
+                    .labelsHidden()
+                }
             }
             .padding(.horizontal)
             .padding(.top, 8)
@@ -926,6 +932,7 @@ private struct NewPlanView: View {
         do {
             let url = try PlanPDFBuilder.buildPDF(
                 patientName: patientName,
+                reportTitle: reportTitle,
                 reportDate: reportDate,
                 templates: exportTemplates,
                 letterheadURL: store.selectedLetterheadName.map { store.letterheadURL(named: $0) }
@@ -1697,7 +1704,7 @@ private struct TemplatesJSONDocument: FileDocument {
 // MARK: - PDF generation
 
 enum PlanPDFBuilder {
-    static func buildPDF(patientName: String, reportDate: Date, templates: [ConditionTemplate], letterheadURL: URL?) throws -> URL {
+    static func buildPDF(patientName: String, reportTitle: String, reportDate: Date, templates: [ConditionTemplate], letterheadURL: URL?) throws -> URL {
         let filenamePatient = patientName.trimmingCharacters(in: .whitespacesAndNewlines)
         let safeName = filenamePatient.isEmpty ? "Patient" : filenamePatient
         let outURL = FileManager.default.temporaryDirectory
@@ -1710,34 +1717,86 @@ enum PlanPDFBuilder {
             let marginX: CGFloat = 54
             let contentWidth = pageRect.width - 2 * marginX
             let contentTopY: CGFloat = 112
-            let footerY: CGFloat = pageRect.height - 60
+            let footerY: CGFloat = pageRect.height - 78
             let pageBreakThreshold: CGFloat = pageRect.height - 110
 
             // Shared measurement/drawing helpers
-            func textHeight(_ text: String, font: UIFont, width: CGFloat) -> CGFloat {
-                let attrs: [NSAttributedString.Key: Any] = [.font: font]
-                let nsText = text as NSString
-                let rect = nsText.boundingRect(
+            func normalize(_ s: String) -> String {
+                // Convert escaped newlines/tabs stored in templates into actual characters.
+                s.replacingOccurrences(of: "\\r\\n", with: "\n")
+                    .replacingOccurrences(of: "\\n", with: "\n")
+                    .replacingOccurrences(of: "\\t", with: "\t")
+            }
+
+            // Attributed string helpers supporting bullets
+            func makeAttributed(_ text: String, font: UIFont, alignment: NSTextAlignment, bullets: Bool) -> NSAttributedString {
+                let para = NSMutableParagraphStyle()
+                para.alignment = alignment
+                para.lineBreakMode = .byWordWrapping
+
+                if bullets {
+                    // Convert simple bullet markers at line starts into typographic bullets.
+                    // Supports: "- ", "* ", and "• "
+                    let lines = text.components(separatedBy: "\n")
+                    let convertedLines = lines.map { line -> String in
+                        if line.hasPrefix("- ") {
+                            return "•\t" + String(line.dropFirst(2))
+                        }
+                        if line.hasPrefix("* ") {
+                            return "•\t" + String(line.dropFirst(2))
+                        }
+                        if line.hasPrefix("• ") {
+                            return "•\t" + String(line.dropFirst(2))
+                        }
+                        return line
+                    }
+
+                    let converted = convertedLines.joined(separator: "\n")
+
+                    let containsBullet = converted.contains("•\t")
+
+                    if containsBullet {
+                        // Apply hanging indent only when actual bullets are present
+                        para.defaultTabInterval = 14
+                        para.tabStops = [NSTextTab(textAlignment: .left, location: 14, options: [:])]
+                        para.firstLineHeadIndent = 0
+                        para.headIndent = 14
+                    } else {
+                        // No bullets → normal paragraph wrapping
+                        para.firstLineHeadIndent = 0
+                        para.headIndent = 0
+                    }
+
+                    return NSAttributedString(
+                        string: converted,
+                        attributes: [
+                            .font: font,
+                            .paragraphStyle: para
+                        ]
+                    )
+                } else {
+                    return NSAttributedString(
+                        string: text,
+                        attributes: [
+                            .font: font,
+                            .paragraphStyle: para
+                        ]
+                    )
+                }
+            }
+
+            func attributedHeight(_ attr: NSAttributedString, width: CGFloat) -> CGFloat {
+                let rect = attr.boundingRect(
                     with: CGSize(width: width, height: 10_000),
                     options: [.usesLineFragmentOrigin, .usesFontLeading],
-                    attributes: attrs,
                     context: nil
                 )
                 return ceil(rect.height)
             }
 
-            func drawAligned(_ text: String, font: UIFont, x: CGFloat, y: CGFloat, width: CGFloat, alignment: NSTextAlignment) -> CGFloat {
-                let para = NSMutableParagraphStyle()
-                para.alignment = alignment
-                para.lineBreakMode = .byWordWrapping
-                let attrs: [NSAttributedString.Key: Any] = [
-                    .font: font,
-                    .paragraphStyle: para
-                ]
-                let nsText = text as NSString
-                let h = textHeight(text, font: font, width: width)
-                let drawRect = CGRect(x: x, y: y, width: width, height: h)
-                nsText.draw(in: drawRect, withAttributes: attrs)
+            func drawAttributed(_ attr: NSAttributedString, x: CGFloat, y: CGFloat, width: CGFloat) -> CGFloat {
+                let h = attributedHeight(attr, width: width)
+                attr.draw(with: CGRect(x: x, y: y, width: width, height: h), options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
                 return y + h
             }
 
@@ -1756,6 +1815,7 @@ enum PlanPDFBuilder {
                 let font: UIFont
                 let topPad: CGFloat
                 let bottomPad: CGFloat
+                let keepWithNext: Int
             }
 
             var blocks: [Block] = []
@@ -1763,11 +1823,12 @@ enum PlanPDFBuilder {
             blocks.append(
                 Block(
                     kind: .docTitle,
-                    leftText: "Treatment Plan",
+                    leftText: normalize(reportTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Eye Exam Summary" : reportTitle.trimmingCharacters(in: .whitespacesAndNewlines)),
                     rightText: nil,
                     font: .boldSystemFont(ofSize: 17),
                     topPad: 0,
-                    bottomPad: 8
+                    bottomPad: 8,
+                    keepWithNext: 1
                 )
             )
 
@@ -1777,11 +1838,12 @@ enum PlanPDFBuilder {
             blocks.append(
                 Block(
                     kind: .patientDateRow,
-                    leftText: patientLeft,
-                    rightText: dateRight,
+                    leftText: normalize(patientLeft),
+                    rightText: normalize(dateRight),
                     font: .systemFont(ofSize: 12),
                     topPad: 0,
-                    bottomPad: 14
+                    bottomPad: 14,
+                    keepWithNext: 1
                 )
             )
 
@@ -1789,11 +1851,12 @@ enum PlanPDFBuilder {
                 blocks.append(
                     Block(
                         kind: .condTitleBox,
-                        leftText: t.title,
+                        leftText: normalize(t.title).uppercased(),
                         rightText: nil,
-                        font: .boldSystemFont(ofSize: 12),
+                        font: .boldSystemFont(ofSize: 10),
                         topPad: 0,
-                        bottomPad: 10
+                        bottomPad: 10,
+                        keepWithNext: 2
                     )
                 )
 
@@ -1802,21 +1865,23 @@ enum PlanPDFBuilder {
                     blocks.append(
                         Block(
                             kind: .label,
-                            leftText: "Assessment:",
+                            leftText: normalize("Assessment:"),
                             rightText: nil,
                             font: .boldSystemFont(ofSize: 11),
                             topPad: 0,
-                            bottomPad: 2
+                            bottomPad: 2,
+                            keepWithNext: 1
                         )
                     )
                     blocks.append(
                         Block(
                             kind: .body,
-                            leftText: a,
+                            leftText: normalize(a),
                             rightText: nil,
-                            font: .systemFont(ofSize: 11),
+                            font: .systemFont(ofSize: 10),
                             topPad: 0,
-                            bottomPad: 8
+                            bottomPad: 8,
+                            keepWithNext: 0
                         )
                     )
                 }
@@ -1826,24 +1891,27 @@ enum PlanPDFBuilder {
                     blocks.append(
                         Block(
                             kind: .label,
-                            leftText: "Plan:",
+                            leftText: normalize("Plan:"),
                             rightText: nil,
                             font: .boldSystemFont(ofSize: 11),
                             topPad: 0,
-                            bottomPad: 2
+                            bottomPad: 2,
+                            keepWithNext: 1
                         )
                     )
                     blocks.append(
                         Block(
                             kind: .body,
-                            leftText: p,
+                            leftText: normalize(p),
                             rightText: nil,
-                            font: .systemFont(ofSize: 11),
+                            font: .systemFont(ofSize: 10),
                             topPad: 0,
-                            bottomPad: 14
+                            bottomPad: 14,
+                            keepWithNext: 0
                         )
                     )
                 }
+                // (Divider removed)
             }
 
             // Paginate
@@ -1860,28 +1928,61 @@ enum PlanPDFBuilder {
             func blockHeight(_ b: Block) -> CGFloat {
                 switch b.kind {
                 case .patientDateRow:
-                    let leftH = textHeight(b.leftText, font: b.font, width: halfWidth)
-                    let rightH = textHeight(b.rightText ?? "", font: b.font, width: halfWidth)
+                    let leftAttr = makeAttributed(b.leftText, font: b.font, alignment: .left, bullets: false)
+                    let rightAttr = makeAttributed(b.rightText ?? "", font: b.font, alignment: .right, bullets: false)
+                    let leftH = attributedHeight(leftAttr, width: halfWidth)
+                    let rightH = attributedHeight(rightAttr, width: halfWidth)
                     return b.topPad + max(leftH, rightH) + b.bottomPad
 
                 case .condTitleBox:
-                    // Box padding around title text
+                    let outdent: CGFloat = 8
                     let innerPadY: CGFloat = 6
-                    let h = textHeight(b.leftText, font: b.font, width: contentWidth - 18)
+                    let innerPadX: CGFloat = 9
+                    let titleAttr = makeAttributed(b.leftText, font: b.font, alignment: .left, bullets: false)
+                    let h = attributedHeight(titleAttr, width: (contentWidth + outdent) - innerPadX * 2)
                     return b.topPad + (h + innerPadY * 2) + b.bottomPad
 
-                default:
-                    return b.topPad + textHeight(b.leftText, font: b.font, width: contentWidth) + b.bottomPad
+                case .docTitle:
+                    let attr = makeAttributed(b.leftText, font: b.font, alignment: .center, bullets: false)
+                    return b.topPad + attributedHeight(attr, width: contentWidth) + b.bottomPad
+
+                case .label:
+                    let indent: CGFloat = 14
+                    let attr = makeAttributed(b.leftText, font: b.font, alignment: .left, bullets: false)
+                    return b.topPad + attributedHeight(attr, width: contentWidth - indent) + b.bottomPad
+
+                case .body:
+                    let indent: CGFloat = 18
+                    let attr = makeAttributed(b.leftText, font: b.font, alignment: .left, bullets: true)
+                    return b.topPad + attributedHeight(attr, width: contentWidth - indent) + b.bottomPad
                 }
             }
 
-            for b in blocks {
-                let h = blockHeight(b)
-                if y + h > pageBreakThreshold {
+            var i = 0
+            while i < blocks.count {
+                let b = blocks[i]
+
+                // If this block requests to stay with the next N blocks, measure them together.
+                var combinedH = blockHeight(b)
+                if b.keepWithNext > 0 {
+                    let end = min(blocks.count - 1, i + b.keepWithNext)
+                    if i < end {
+                        for j in (i + 1)...end {
+                            combinedH += blockHeight(blocks[j])
+                        }
+                    }
+                }
+
+                // If the combined group would overflow, start a new page BEFORE the group.
+                if y + combinedH > pageBreakThreshold, !pages[pages.count - 1].isEmpty {
                     startNewPage()
                 }
+
+                // Add current block.
+                let h = blockHeight(b)
                 pages[pages.count - 1].append(b)
                 y += h
+                i += 1
             }
 
             let totalPages = pages.count
@@ -1911,45 +2012,47 @@ enum PlanPDFBuilder {
 
                     switch b.kind {
                     case .docTitle:
-                        yCursor = drawAligned(b.leftText, font: b.font, x: marginX, y: yCursor, width: contentWidth, alignment: .center)
+                        let attr = makeAttributed(b.leftText, font: b.font, alignment: .center, bullets: false)
+                        yCursor = drawAttributed(attr, x: marginX, y: yCursor, width: contentWidth)
 
                     case .patientDateRow:
-                        _ = drawAligned(b.leftText, font: b.font, x: marginX, y: yCursor, width: halfWidth, alignment: .left)
-                        _ = drawAligned(b.rightText ?? "", font: b.font, x: marginX + halfWidth + 12, y: yCursor, width: halfWidth, alignment: .right)
-                        // Advance by the max of the two heights
-                        let leftH = textHeight(b.leftText, font: b.font, width: halfWidth)
-                        let rightH = textHeight(b.rightText ?? "", font: b.font, width: halfWidth)
+                        let leftAttr = makeAttributed(b.leftText, font: b.font, alignment: .left, bullets: false)
+                        let rightAttr = makeAttributed(b.rightText ?? "", font: b.font, alignment: .right, bullets: false)
+                        _ = drawAttributed(leftAttr, x: marginX, y: yCursor, width: halfWidth)
+                        _ = drawAttributed(rightAttr, x: marginX + halfWidth + 12, y: yCursor, width: halfWidth)
+                        let leftH = attributedHeight(leftAttr, width: halfWidth)
+                        let rightH = attributedHeight(rightAttr, width: halfWidth)
                         yCursor += max(leftH, rightH)
 
                     case .condTitleBox:
+                        // Slightly outdent the header box for emphasis
+                        let outdent: CGFloat = 8
                         let innerPadX: CGFloat = 9
                         let innerPadY: CGFloat = 6
-                        let titleH = textHeight(b.leftText, font: b.font, width: contentWidth - innerPadX * 2)
+                        let titleAttr = makeAttributed(b.leftText, font: b.font, alignment: .left, bullets: false)
+                        let titleH = attributedHeight(titleAttr, width: (contentWidth + outdent) - innerPadX * 2)
                         let boxH = titleH + innerPadY * 2
-                        let boxRect = CGRect(x: marginX, y: yCursor, width: contentWidth, height: boxH)
+                        let boxRect = CGRect(x: marginX - outdent, y: yCursor, width: contentWidth + outdent, height: boxH)
                         ctx.cgContext.saveGState()
-                        ctx.cgContext.setLineWidth(1)
-                        ctx.cgContext.setStrokeColor(UIColor.secondaryLabel.withAlphaComponent(0.35).cgColor)
+                        ctx.cgContext.setLineWidth(2.5)
+                        ctx.cgContext.setStrokeColor(UIColor.black.cgColor)
                         let path = UIBezierPath(roundedRect: boxRect, cornerRadius: 8)
                         ctx.cgContext.addPath(path.cgPath)
                         ctx.cgContext.strokePath()
                         ctx.cgContext.restoreGState()
 
-                        _ = drawAligned(
-                            b.leftText,
-                            font: b.font,
-                            x: marginX + innerPadX,
-                            y: yCursor + innerPadY,
-                            width: contentWidth - innerPadX * 2,
-                            alignment: .left
-                        )
+                        _ = drawAttributed(titleAttr, x: (marginX - outdent) + innerPadX, y: yCursor + innerPadY, width: (contentWidth + outdent) - innerPadX * 2)
                         yCursor += boxH
 
                     case .label:
-                        yCursor = drawAligned(b.leftText, font: b.font, x: marginX, y: yCursor, width: contentWidth, alignment: .left)
+                        let indent: CGFloat = 14
+                        let attr = makeAttributed(b.leftText, font: b.font, alignment: .left, bullets: false)
+                        yCursor = drawAttributed(attr, x: marginX + indent, y: yCursor, width: contentWidth - indent)
 
                     case .body:
-                        yCursor = drawAligned(b.leftText, font: b.font, x: marginX, y: yCursor, width: contentWidth, alignment: .left)
+                        let indent: CGFloat = 18
+                        let attr = makeAttributed(b.leftText, font: b.font, alignment: .left, bullets: true)
+                        yCursor = drawAttributed(attr, x: marginX + indent, y: yCursor, width: contentWidth - indent)
                     }
 
                     yCursor += b.bottomPad
@@ -1958,7 +2061,8 @@ enum PlanPDFBuilder {
                 // Footer page numbering (bottom-right)
                 let footerText = "Page \(pageIndex + 1) of \(totalPages)"
                 let footerFont = UIFont.systemFont(ofSize: 10)
-                _ = drawAligned(footerText, font: footerFont, x: marginX, y: footerY, width: contentWidth, alignment: .right)
+                let footerAttr = makeAttributed(footerText, font: footerFont, alignment: .right, bullets: false)
+                _ = drawAttributed(footerAttr, x: marginX, y: footerY, width: contentWidth)
             }
         }
 
