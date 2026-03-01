@@ -41,9 +41,22 @@ struct ConditionTemplate: Identifiable, Codable, Equatable {
     var updatedAt: Date = Date()
 }
 
-struct PlanItem: Identifiable, Codable, Equatable {
+struct PlanEntry: Identifiable, Codable, Equatable {
+    var id: UUID
+    var templateID: UUID?   // nil for “Other”
+    var title: String
+    var assessment: String
+    var plan: String
+    var originalAssessment: String
+    var originalPlan: String
+}
+
+struct SavedPlan: Identifiable, Codable, Equatable {
     var id: UUID = UUID()
-    var templateID: UUID
+    var savedAt: Date = Date()
+    var level: TemplateLevel
+    var patientName: String
+    var entries: [PlanEntry]
 }
 
 private struct LetterheadState: Codable {
@@ -92,12 +105,19 @@ final class AppStore: ObservableObject {
         didSet { persistLetterheads() }
     }
 
+    // History (last 5 plans)
+    @Published var history: [SavedPlan] = [] {
+        didSet { persistHistory() }
+    }
+
     private let templatesKey = "summary.conditionTemplates.v1"
     private let letterheadsKey = "summary.letterheads.v1"
+    private let historyKey = "summary.history.v1"
 
     init() {
         loadTemplates()
         loadLetterheads()
+        loadHistory()
         if templates.isEmpty { seedDefaults() }
     }
 
@@ -243,6 +263,54 @@ final class AppStore: ObservableObject {
         }
     }
 
+    // MARK: History
+
+    func addToHistory(level: TemplateLevel, patientName: String, entries: [PlanEntry]) {
+        // Don’t store completely empty plans
+        let hasAnyContent = !patientName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                            entries.contains(where: {
+                                !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                                !$0.assessment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                                !$0.plan.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            })
+        guard hasAnyContent else { return }
+
+        let item = SavedPlan(level: level, patientName: patientName, entries: entries)
+        history.insert(item, at: 0)
+        if history.count > 5 {
+            history = Array(history.prefix(5))
+        }
+    }
+
+    func deleteHistory(at offsets: IndexSet) {
+        history.remove(atOffsets: offsets)
+    }
+
+    func clearHistory() {
+        history = []
+    }
+
+    private func loadHistory() {
+        guard let data = UserDefaults.standard.data(forKey: historyKey) else {
+            history = []
+            return
+        }
+        do {
+            history = try JSONDecoder.standard.decode([SavedPlan].self, from: data)
+        } catch {
+            history = []
+        }
+    }
+
+    private func persistHistory() {
+        do {
+            let data = try JSONEncoder.standard.encode(history)
+            UserDefaults.standard.set(data, forKey: historyKey)
+        } catch {
+            // ignore
+        }
+    }
+
     private func seedDefaults() {
         templates = [
             ConditionTemplate(
@@ -305,10 +373,13 @@ private struct NewPlanView: View {
     @State private var selectedTemplateID: UUID? = nil
 
     @State private var patientName: String = ""
-    @State private var planItems: [PlanItem] = []
+    @State private var planEntries: [PlanEntry] = []
 
     @State private var showShareSheet = false
     @State private var exportURL: URL? = nil
+    @State private var pendingDeleteEntryID: UUID? = nil
+    @State private var showDeleteWarning: Bool = false
+    @State private var showHistorySheet: Bool = false
 
     private var pinned: [ConditionTemplate] {
         store.templates
@@ -331,7 +402,17 @@ private struct NewPlanView: View {
         .navigationTitle("Tx Plan")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button("Clear") { clearForm() }
+                HStack {
+                    Button {
+                        showHistorySheet = true
+                    } label: {
+                        Image(systemName: "clock.arrow.circlepath")
+                    }
+
+                    Button("Clear") {
+                        clearForm()
+                    }
+                }
             }
         }
         .sheet(isPresented: $showShareSheet) {
@@ -340,6 +421,37 @@ private struct NewPlanView: View {
             } else {
                 ActivityView(items: [])
             }
+        }
+        .sheet(isPresented: $showHistorySheet) {
+            HistorySheet(
+                history: store.history,
+                onRestore: { saved in
+                    level = saved.level
+                    patientName = saved.patientName
+                    planEntries = saved.entries
+                    selectedTemplateID = nil
+                    showHistorySheet = false
+                },
+                onDelete: { offsets in
+                    store.deleteHistory(at: offsets)
+                },
+                onClearAll: {
+                    store.clearHistory()
+                }
+            )
+        }
+        .alert("Discard changes?", isPresented: $showDeleteWarning) {
+            Button("Delete", role: .destructive) {
+                if let id = pendingDeleteEntryID {
+                    deleteEntryNow(id: id)
+                }
+                pendingDeleteEntryID = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingDeleteEntryID = nil
+            }
+        } message: {
+            Text("This item has edits. Deleting it will lose your changes.")
         }
     }
 
@@ -359,12 +471,18 @@ private struct NewPlanView: View {
                     Section("Pinned") {
                         ForEach(pinned) { t in
                             Button {
-                                addToPlan(templateID: t.id)
-                                selectedTemplateID = t.id
+                                toggleTemplateSelection(t)
                             } label: {
-                                Text(t.title)
-                                    .font(.subheadline)
-                                    .multilineTextAlignment(.leading)
+                                HStack {
+                                    Text(t.title)
+                                        .font(.subheadline)
+                                        .multilineTextAlignment(.leading)
+                                    Spacer()
+                                    if isTemplateSelected(t.id) {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundStyle(.tint)
+                                    }
+                                }
                             }
                         }
                     }
@@ -373,24 +491,34 @@ private struct NewPlanView: View {
                 Section {
                     ForEach(others) { t in
                         Button {
-                            addToPlan(templateID: t.id)
-                            selectedTemplateID = t.id
+                            toggleTemplateSelection(t)
                         } label: {
-                            Text(t.title)
-                                .font(.subheadline)
-                                .multilineTextAlignment(.leading)
+                            HStack {
+                                Text(t.title)
+                                    .font(.subheadline)
+                                    .multilineTextAlignment(.leading)
+                                Spacer()
+                                if isTemplateSelected(t.id) {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundStyle(.tint)
+                                }
+                            }
                         }
                     }
                 }
 
                 Section {
-                    Label("Other", systemImage: "plus.circle")
-                        .foregroundStyle(.secondary)
+                    Button {
+                        addOtherEntry()
+                        selectedTemplateID = nil
+                    } label: {
+                        Label("Other", systemImage: "plus.circle")
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
         }
     }
-
     private var detail: some View {
         VStack(alignment: .leading, spacing: 12) {
             TextField("Patient Name", text: $patientName)
@@ -398,7 +526,7 @@ private struct NewPlanView: View {
                 .padding(.horizontal)
                 .padding(.top, 8)
 
-            if planItems.isEmpty {
+            if planEntries.isEmpty {
                 ContentUnavailableView(
                     "No items in plan",
                     systemImage: "doc.text",
@@ -408,14 +536,20 @@ private struct NewPlanView: View {
             } else {
                 List {
                     Section("Selected") {
-                        ForEach(resolvedPlanTemplates) { t in
-                            VStack(alignment: .leading, spacing: 10) {
+                        ForEach($planEntries) { $entry in
+                            VStack(alignment: .leading, spacing: 12) {
                                 HStack(alignment: .top) {
-                                    Text(t.title)
-                                        .font(.headline)
+                                    if entry.templateID == nil {
+                                        TextField("Condition", text: $entry.title)
+                                            .textFieldStyle(.roundedBorder)
+                                            .font(.headline)
+                                    } else {
+                                        Text(entry.title.isEmpty ? "(Untitled)" : entry.title)
+                                            .font(.headline)
+                                    }
                                     Spacer()
                                     Button {
-                                        removeFromPlan(templateID: t.id)
+                                        requestDelete(entryID: entry.id)
                                     } label: {
                                         Image(systemName: "xmark.circle.fill")
                                             .foregroundStyle(.secondary)
@@ -423,32 +557,36 @@ private struct NewPlanView: View {
                                     .buttonStyle(.plain)
                                 }
 
-                                if !t.assessment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                    VStack(alignment: .leading, spacing: 4) {
+                                HStack(alignment: .top, spacing: 12) {
+                                    VStack(alignment: .leading, spacing: 6) {
                                         Text("Assessment")
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
-                                        Text(t.assessment)
-                                            .font(.body)
-                                            .textSelection(.enabled)
+                                        TextEditor(text: $entry.assessment)
+                                            .frame(minHeight: 120)
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 8)
+                                                    .stroke(.secondary.opacity(0.35))
+                                            )
                                     }
-                                }
 
-                                if !t.plan.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                    VStack(alignment: .leading, spacing: 4) {
+                                    VStack(alignment: .leading, spacing: 6) {
                                         Text("Plan")
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
-                                        Text(t.plan)
-                                            .font(.body)
-                                            .textSelection(.enabled)
+                                        TextEditor(text: $entry.plan)
+                                            .frame(minHeight: 120)
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 8)
+                                                    .stroke(.secondary.opacity(0.35))
+                                            )
                                     }
                                 }
                             }
                             .padding(.vertical, 8)
                         }
                         .onMove { from, to in
-                            planItems.move(fromOffsets: from, toOffset: to)
+                            planEntries.move(fromOffsets: from, toOffset: to)
                         }
                     }
                 }
@@ -464,7 +602,7 @@ private struct NewPlanView: View {
                     Label("Export PDF", systemImage: "square.and.arrow.up")
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(planItems.isEmpty)
+                .disabled(planEntries.isEmpty)
 
                 Spacer()
 
@@ -477,22 +615,96 @@ private struct NewPlanView: View {
         }
     }
 
-    private var resolvedPlanTemplates: [ConditionTemplate] {
-        planItems.compactMap { store.template(id: $0.templateID) }
+    private var exportTemplates: [ConditionTemplate] {
+        planEntries.map {
+            ConditionTemplate(
+                id: $0.templateID ?? $0.id,
+                title: $0.title,
+                assessment: $0.assessment,
+                plan: $0.plan,
+                level: level,
+                isPinned: false,
+                createdAt: Date(),
+                updatedAt: Date()
+            )
+        }
     }
 
     private func addToPlan(templateID: UUID) {
-        if planItems.contains(where: { $0.templateID == templateID }) { return }
-        planItems.append(PlanItem(templateID: templateID))
+        guard let t = store.template(id: templateID) else { return }
+        if planEntries.contains(where: { $0.templateID == templateID }) { return }
+
+        planEntries.append(
+            PlanEntry(
+                id: UUID(),
+                templateID: templateID,
+                title: t.title,
+                assessment: t.assessment,
+                plan: t.plan,
+                originalAssessment: t.assessment,
+                originalPlan: t.plan
+            )
+        )
+    }
+    private func isTemplateSelected(_ templateID: UUID) -> Bool {
+        planEntries.contains(where: { $0.templateID == templateID })
     }
 
-    private func removeFromPlan(templateID: UUID) {
-        planItems.removeAll { $0.templateID == templateID }
+    private func toggleTemplateSelection(_ template: ConditionTemplate) {
+        if let entry = planEntries.first(where: { $0.templateID == template.id }) {
+            // tap again removes (with warning if edited)
+            requestDelete(entryID: entry.id)
+            selectedTemplateID = nil
+        } else {
+            addToPlan(templateID: template.id)
+            selectedTemplateID = template.id
+        }
+    }
+    private func addOtherEntry() {
+        planEntries.append(
+            PlanEntry(
+                id: UUID(),
+                templateID: nil,
+                title: "Other",
+                assessment: "",
+                plan: "",
+                originalAssessment: "",
+                originalPlan: ""
+            )
+        )
+    }
+
+    private func needsDeleteWarning(for entry: PlanEntry) -> Bool {
+        if entry.templateID == nil {
+            let trimmedTitle = entry.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmedAssessment = entry.assessment.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmedPlan = entry.plan.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            let titleIsDefault = trimmedTitle.isEmpty || trimmedTitle == "Other"
+            let hasEdits = !trimmedAssessment.isEmpty || !trimmedPlan.isEmpty || !titleIsDefault
+            return hasEdits
+        }
+        return entry.assessment != entry.originalAssessment || entry.plan != entry.originalPlan
+    }
+
+    private func requestDelete(entryID: UUID) {
+        guard let entry = planEntries.first(where: { $0.id == entryID }) else { return }
+        if needsDeleteWarning(for: entry) {
+            pendingDeleteEntryID = entryID
+            showDeleteWarning = true
+        } else {
+            deleteEntryNow(id: entryID)
+        }
+    }
+
+    private func deleteEntryNow(id: UUID) {
+        planEntries.removeAll { $0.id == id }
     }
 
     private func clearForm() {
+        store.addToHistory(level: level, patientName: patientName, entries: planEntries)
         patientName = ""
-        planItems = []
+        planEntries = []
         selectedTemplateID = nil
     }
 
@@ -500,13 +712,86 @@ private struct NewPlanView: View {
         do {
             let url = try PlanPDFBuilder.buildPDF(
                 patientName: patientName,
-                templates: resolvedPlanTemplates,
+                templates: exportTemplates,
                 letterheadURL: store.selectedLetterheadName.map { store.letterheadURL(named: $0) }
             )
             exportURL = url
             showShareSheet = true
         } catch {
             // ignore for now
+        }
+    }
+}
+
+// MARK: - HistorySheet
+
+private struct HistorySheet: View {
+    let history: [SavedPlan]
+    let onRestore: (SavedPlan) -> Void
+    let onDelete: (IndexSet) -> Void
+    let onClearAll: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if history.isEmpty {
+                    ContentUnavailableView(
+                        "No history",
+                        systemImage: "clock",
+                        description: Text("Cleared plans are saved here (up to 5).")
+                    )
+                } else {
+                    List {
+                        ForEach(history) { item in
+                            Button {
+                                onRestore(item)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text(item.patientName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "(No patient name)" : item.patientName)
+                                        .font(.headline)
+
+                                    HStack(spacing: 10) {
+                                        Text(item.level.displayName)
+                                            .font(.subheadline)
+                                            .foregroundStyle(.secondary)
+
+                                        Text(item.savedAt.formatted(date: .abbreviated, time: .shortened))
+                                            .font(.subheadline)
+                                            .foregroundStyle(.secondary)
+
+                                        Spacer()
+
+                                        Text("\(item.entries.count) item\(item.entries.count == 1 ? "" : "s")")
+                                            .font(.subheadline)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                .padding(.vertical, 6)
+                            }
+                        }
+                        .onDelete(perform: onDelete)
+                    }
+                }
+            }
+            .navigationTitle("History")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") { dismiss() }
+                }
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    if !history.isEmpty {
+                        Button(role: .destructive) {
+                            onClearAll()
+                        } label: {
+                            Text("Clear All")
+                        }
+                    }
+                }
+            }
         }
     }
 }
