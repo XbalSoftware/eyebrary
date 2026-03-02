@@ -115,8 +115,59 @@ struct SavedPlan: Identifiable, Codable, Equatable {
     var id: UUID = UUID()
     var savedAt: Date = Date()
     var level: TemplateLevel
+
+    // NOTE: Not stored for privacy when clearing a plan.
     var patientName: String
+
+    // Stored so the report can be restored from History.
+    var reportTitle: String
+    var reportDate: Date
+
     var entries: [PlanEntry]
+
+    enum CodingKeys: String, CodingKey {
+        case id, savedAt, level, patientName, reportTitle, reportDate, entries
+    }
+
+    init(
+        id: UUID = UUID(),
+        savedAt: Date = Date(),
+        level: TemplateLevel,
+        patientName: String,
+        reportTitle: String,
+        reportDate: Date,
+        entries: [PlanEntry]
+    ) {
+        self.id = id
+        self.savedAt = savedAt
+        self.level = level
+        self.patientName = patientName
+        self.reportTitle = reportTitle
+        self.reportDate = reportDate
+        self.entries = entries
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        self.savedAt = try c.decodeIfPresent(Date.self, forKey: .savedAt) ?? Date()
+        self.level = try c.decode(TemplateLevel.self, forKey: .level)
+        self.patientName = try c.decodeIfPresent(String.self, forKey: .patientName) ?? ""
+        self.reportTitle = try c.decodeIfPresent(String.self, forKey: .reportTitle) ?? ""
+        self.reportDate = try c.decodeIfPresent(Date.self, forKey: .reportDate) ?? Date()
+        self.entries = try c.decodeIfPresent([PlanEntry].self, forKey: .entries) ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(savedAt, forKey: .savedAt)
+        try c.encode(level, forKey: .level)
+        try c.encode(patientName, forKey: .patientName)
+        try c.encode(reportTitle, forKey: .reportTitle)
+        try c.encode(reportDate, forKey: .reportDate)
+        try c.encode(entries, forKey: .entries)
+    }
 }
 
 private struct LetterheadState: Codable {
@@ -389,7 +440,7 @@ final class AppStore: ObservableObject {
 
     // MARK: History
 
-    func addToHistory(level: TemplateLevel, patientName: String, entries: [PlanEntry]) {
+    func addToHistory(level: TemplateLevel, reportTitle: String, reportDate: Date, patientName: String, entries: [PlanEntry]) {
         // Don’t store completely empty plans
         let hasAnyContent = !patientName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                             entries.contains(where: {
@@ -399,7 +450,7 @@ final class AppStore: ObservableObject {
                             })
         guard hasAnyContent else { return }
 
-        let item = SavedPlan(level: level, patientName: patientName, entries: entries)
+        let item = SavedPlan(level: level, patientName: patientName, reportTitle: reportTitle, reportDate: reportDate, entries: entries)
         history.insert(item, at: 0)
         if history.count > 5 {
             history = Array(history.prefix(5))
@@ -532,7 +583,13 @@ private struct NewPlanView: View {
     // Sidebar search (New Plan)
     @State private var query: String = ""
 
-    @State private var reportTitle: String = "Eye Exam Summary"
+    @State private var reportTitle: String = ""
+
+    private let reportTitlePresets: [String] = [
+        "Eye Exam Summary",
+        "Patient Information",
+        "Topics Discussed"
+    ]
     @State private var patientName: String = ""
     @State private var reportDate: Date = Date()
     @State private var planEntries: [PlanEntry] = []
@@ -610,6 +667,8 @@ private struct NewPlanView: View {
                 history: store.history,
                 onRestore: { saved in
                     level = saved.level
+                    reportTitle = saved.reportTitle
+                    reportDate = saved.reportDate
                     patientName = saved.patientName
                     planEntries = saved.entries
                     selectedTemplateID = nil
@@ -755,8 +814,40 @@ private struct NewPlanView: View {
     private var detail: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(spacing: 10) {
-                TextField("Report Title", text: $reportTitle)
-                    .textFieldStyle(.roundedBorder)
+                HStack(spacing: 10) {
+                    TextField("Report Title", text: $reportTitle)
+                        .textFieldStyle(.roundedBorder)
+
+                    Menu {
+                        Button("(No title)") {
+                            reportTitle = ""
+                        }
+                        Divider()
+                        ForEach(reportTitlePresets, id: \.self) { preset in
+                            Button {
+                                reportTitle = preset
+                            } label: {
+                                if reportTitle.trimmingCharacters(in: .whitespacesAndNewlines) == preset {
+                                    Label(preset, systemImage: "checkmark")
+                                } else {
+                                    Text(preset)
+                                }
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.body)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color.secondary.opacity(0.12))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Choose a report title")
+                }
 
                 HStack(spacing: 12) {
                     TextField("Patient Name", text: $patientName)
@@ -787,15 +878,14 @@ private struct NewPlanView: View {
                         ForEach($planEntries) { $entry in
                             VStack(alignment: .leading, spacing: 12) {
                                 HStack(alignment: .top) {
-                                    if entry.templateID == nil {
-                                        TextField("Condition", text: $entry.title)
-                                            .textFieldStyle(.roundedBorder)
-                                            .font(.headline)
-                                    } else {
-                                        Text(entry.title.isEmpty ? "(Untitled)" : entry.title)
-                                            .font(.headline)
-                                    }
+                                    TextField("Condition", text: $entry.title)
+                                        .textFieldStyle(.plain)
+                                        .font(.headline)
+                                        .textInputAutocapitalization(.characters)
+                                        .autocorrectionDisabled(true)
+
                                     Spacer()
+
                                     Button {
                                         requestDelete(entryID: entry.id)
                                     } label: {
@@ -983,8 +1073,13 @@ private struct NewPlanView: View {
     }
 
     private func clearForm() {
-        store.addToHistory(level: level, patientName: patientName, entries: planEntries)
+        // Privacy: do not store patient name in history.
+        store.addToHistory(level: level, reportTitle: reportTitle, reportDate: reportDate, patientName: "", entries: planEntries)
+
+        // Clear form fields.
+        reportTitle = ""
         patientName = ""
+        reportDate = Date()
         planEntries = []
         selectedTemplateID = nil
     }
@@ -1938,32 +2033,37 @@ enum PlanPDFBuilder {
 
             var blocks: [Block] = []
 
-            blocks.append(
-                Block(
-                    kind: .docTitle,
-                    leftText: normalize(reportTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Eye Exam Summary" : reportTitle.trimmingCharacters(in: .whitespacesAndNewlines)),
-                    rightText: nil,
-                    font: .boldSystemFont(ofSize: 17),
-                    topPad: 0,
-                    bottomPad: 8,
-                    keepWithNext: 1
+            let trimmedTitle = reportTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedTitle.isEmpty {
+                blocks.append(
+                    Block(
+                        kind: .docTitle,
+                        leftText: normalize(trimmedTitle),
+                        rightText: nil,
+                        font: .boldSystemFont(ofSize: 17),
+                        topPad: 0,
+                        bottomPad: 8,
+                        keepWithNext: 1
+                    )
                 )
-            )
+            }
 
             let trimmedPatient = patientName.trimmingCharacters(in: .whitespacesAndNewlines)
-            let patientLeft = trimmedPatient.isEmpty ? "Patient: __________________" : "Patient: \(trimmedPatient)"
-            let dateRight = "Date of Exam: \(reportDate.formatted(date: .abbreviated, time: .omitted))"
-            blocks.append(
-                Block(
-                    kind: .patientDateRow,
-                    leftText: normalize(patientLeft),
-                    rightText: normalize(dateRight),
-                    font: .systemFont(ofSize: 12),
-                    topPad: 0,
-                    bottomPad: 14,
-                    keepWithNext: 1
+            if !trimmedPatient.isEmpty {
+                let patientLeft = "Patient: \(trimmedPatient)"
+                let dateRight = "Date of Exam: \(reportDate.formatted(date: .abbreviated, time: .omitted))"
+                blocks.append(
+                    Block(
+                        kind: .patientDateRow,
+                        leftText: normalize(patientLeft),
+                        rightText: normalize(dateRight),
+                        font: .systemFont(ofSize: 12),
+                        topPad: 0,
+                        bottomPad: 14,
+                        keepWithNext: 1
+                    )
                 )
-            )
+            }
 
             for t in templates {
                 blocks.append(
