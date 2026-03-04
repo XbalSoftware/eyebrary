@@ -35,6 +35,7 @@ struct ConditionTemplate: Identifiable, Codable, Equatable {
     var plan: String
 
     var level: TemplateLevel
+    var defaultStyle: PlanEntryStyle = .clinical
     var isPinned: Bool
     /// If false, the template is hidden from the New Plan picker but remains available in Manage.
     var isVisible: Bool = true
@@ -45,7 +46,7 @@ struct ConditionTemplate: Identifiable, Codable, Equatable {
     var updatedAt: Date = Date()
 
     enum CodingKeys: String, CodingKey {
-        case id, title, assessment, plan, level, isPinned, isVisible, order, createdAt, updatedAt
+        case id, title, assessment, plan, level, defaultStyle, isPinned, isVisible, order, createdAt, updatedAt
     }
 
     init(
@@ -54,6 +55,7 @@ struct ConditionTemplate: Identifiable, Codable, Equatable {
         assessment: String,
         plan: String,
         level: TemplateLevel,
+        defaultStyle: PlanEntryStyle = .clinical,
         isPinned: Bool,
         isVisible: Bool = true,
         order: Int? = nil,
@@ -65,6 +67,7 @@ struct ConditionTemplate: Identifiable, Codable, Equatable {
         self.assessment = assessment
         self.plan = plan
         self.level = level
+        self.defaultStyle = defaultStyle
         self.isPinned = isPinned
         self.isVisible = isVisible
         self.order = order
@@ -79,6 +82,7 @@ struct ConditionTemplate: Identifiable, Codable, Equatable {
         self.assessment = try c.decode(String.self, forKey: .assessment)
         self.plan = try c.decode(String.self, forKey: .plan)
         self.level = try c.decode(TemplateLevel.self, forKey: .level)
+        self.defaultStyle = (try? c.decode(PlanEntryStyle.self, forKey: .defaultStyle)) ?? .clinical
         self.isPinned = try c.decode(Bool.self, forKey: .isPinned)
         self.isVisible = try c.decodeIfPresent(Bool.self, forKey: .isVisible) ?? true
         self.order = try c.decodeIfPresent(Int.self, forKey: .order)
@@ -93,6 +97,7 @@ struct ConditionTemplate: Identifiable, Codable, Equatable {
         try c.encode(assessment, forKey: .assessment)
         try c.encode(plan, forKey: .plan)
         try c.encode(level, forKey: .level)
+        try c.encode(defaultStyle, forKey: .defaultStyle)
         try c.encode(isPinned, forKey: .isPinned)
         try c.encode(isVisible, forKey: .isVisible)
         try c.encodeIfPresent(order, forKey: .order)
@@ -100,15 +105,80 @@ struct ConditionTemplate: Identifiable, Codable, Equatable {
         try c.encode(updatedAt, forKey: .updatedAt)
     }
 }
+enum PlanEntryStyle: String, Codable, CaseIterable, Identifiable {
+    case clinical
+    case education
 
+    var id: String { rawValue }
+
+    var leftLabel: String {
+        switch self {
+        case .clinical: return "Assessment"
+        case .education: return "Overview"
+        }
+    }
+
+    var rightLabel: String {
+        switch self {
+        case .clinical: return "Plan"
+        case .education: return "Treatment Options"
+        }
+    }
+
+    var menuTitle: String {
+        switch self {
+        case .clinical: return "Assessment / Plan"
+        case .education: return "Overview / Treatment Options"
+        }
+    }
+}
 struct PlanEntry: Identifiable, Codable, Equatable {
     var id: UUID
     var templateID: UUID?   // nil for “Other”
+
     var title: String
+    var originalTitle: String
+
+    var style: PlanEntryStyle = .clinical
+    var originalStyle: PlanEntryStyle = .clinical
+    
     var assessment: String
     var plan: String
     var originalAssessment: String
     var originalPlan: String
+}
+extension PlanEntry {
+    enum CodingKeys: String, CodingKey {
+        case id, templateID, title, originalTitle, style, originalStyle, assessment, plan, originalAssessment, originalPlan
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        templateID = try? c.decode(UUID.self, forKey: .templateID)
+        title = try c.decode(String.self, forKey: .title)
+        originalTitle = try c.decode(String.self, forKey: .originalTitle)
+        style = (try? c.decode(PlanEntryStyle.self, forKey: .style)) ?? .clinical
+        originalStyle = (try? c.decode(PlanEntryStyle.self, forKey: .originalStyle)) ?? style
+        assessment = try c.decode(String.self, forKey: .assessment)
+        plan = try c.decode(String.self, forKey: .plan)
+        originalAssessment = try c.decode(String.self, forKey: .originalAssessment)
+        originalPlan = try c.decode(String.self, forKey: .originalPlan)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encodeIfPresent(templateID, forKey: .templateID)
+        try c.encode(title, forKey: .title)
+        try c.encode(originalTitle, forKey: .originalTitle)
+        try c.encode(style, forKey: .style)
+        try c.encode(originalStyle, forKey: .originalStyle)
+        try c.encode(assessment, forKey: .assessment)
+        try c.encode(plan, forKey: .plan)
+        try c.encode(originalAssessment, forKey: .originalAssessment)
+        try c.encode(originalPlan, forKey: .originalPlan)
+    }
 }
 
 struct SavedPlan: Identifiable, Codable, Equatable {
@@ -493,6 +563,7 @@ final class AppStore: ObservableObject {
                 assessment: "Dry eye secondary to meibomian gland dysfunction/exposure OU.",
                 plan: "Hot compresses 5–10 minutes daily, then gentle lid massage. Consider lid hygiene and preservative-free artificial tears as needed. If symptoms persist, consider anti-inflammatory dry eye treatment.",
                 level: .basic,
+                defaultStyle: .clinical,
                 isPinned: true,
                 isVisible: true,
                 order: 0
@@ -502,6 +573,7 @@ final class AppStore: ObservableObject {
                 assessment: "Glaucoma suspect based on optic nerve/IOP risk factors.",
                 plan: "Monitor with periodic IOP checks, optic nerve/OCT imaging, and visual field testing. Escalate to treatment/referral if progression or consistently elevated pressures.",
                 level: .basic,
+                defaultStyle: .clinical,
                 isPinned: true,
                 isVisible: true,
                 order: 1
@@ -511,6 +583,7 @@ final class AppStore: ObservableObject {
                 assessment: "Primary open-angle glaucoma.",
                 plan: "Continue/Initiate IOP-lowering therapy as indicated. Monitor with IOP, OCT, and VF at appropriate intervals. Consider ophthalmology co-management.",
                 level: .advanced,
+                defaultStyle: .clinical,
                 isPinned: false,
                 isVisible: true,
                 order: 2
@@ -885,7 +958,19 @@ private struct NewPlanView: View {
                                         .autocorrectionDisabled(true)
 
                                     Spacer()
-
+                                    Menu {
+                                        Button(PlanEntryStyle.clinical.menuTitle) {
+                                            applyStyle(.clinical, to: &entry)
+                                        }
+                                        Button(PlanEntryStyle.education.menuTitle) {
+                                            applyStyle(.education, to: &entry)
+                                        }
+                                    } label: {
+                                        Image(systemName: entry.style == .clinical ? "stethoscope" : "info.circle")
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("Section format")
                                     Button {
                                         requestDelete(entryID: entry.id)
                                     } label: {
@@ -897,7 +982,7 @@ private struct NewPlanView: View {
 
                                 HStack(alignment: .top, spacing: 12) {
                                     VStack(alignment: .leading, spacing: 6) {
-                                        Text("Assessment")
+                                        Text(entry.style.leftLabel)
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                         TextEditor(text: $entry.assessment)
@@ -909,7 +994,7 @@ private struct NewPlanView: View {
                                     }
 
                                     VStack(alignment: .leading, spacing: 6) {
-                                        Text("Plan")
+                                        Text(entry.style.rightLabel)
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                         TextEditor(text: $entry.plan)
@@ -985,22 +1070,6 @@ private struct NewPlanView: View {
             .padding([.horizontal, .bottom])
         }
     }
-
-    private var exportTemplates: [ConditionTemplate] {
-        planEntries.map {
-            ConditionTemplate(
-                id: $0.templateID ?? $0.id,
-                title: $0.title,
-                assessment: $0.assessment,
-                plan: $0.plan,
-                level: level,
-                isPinned: false,
-                createdAt: Date(),
-                updatedAt: Date()
-            )
-        }
-    }
-
     private func addToPlan(templateID: UUID) {
         guard let t = store.template(id: templateID) else { return }
         if planEntries.contains(where: { $0.templateID == templateID }) { return }
@@ -1010,6 +1079,9 @@ private struct NewPlanView: View {
                 id: UUID(),
                 templateID: templateID,
                 title: t.title,
+                originalTitle: t.title,
+                style: t.defaultStyle,
+                originalStyle: t.defaultStyle,
                 assessment: t.assessment,
                 plan: t.plan,
                 originalAssessment: t.assessment,
@@ -1037,6 +1109,9 @@ private struct NewPlanView: View {
                 id: UUID(),
                 templateID: nil,
                 title: "Other",
+                originalTitle: "Other",
+                style: .clinical,
+                originalStyle: .clinical,
                 assessment: "",
                 plan: "",
                 originalAssessment: "",
@@ -1044,7 +1119,39 @@ private struct NewPlanView: View {
             )
         )
     }
+    private func applyStyle(_ newStyle: PlanEntryStyle, to entry: inout PlanEntry) {
+        guard entry.style != newStyle else { return }
 
+        let trimmedTitle = entry.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseOriginal = entry.originalTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        func stripAbout(_ s: String) -> String {
+            if s.lowercased().hasPrefix("about ") {
+                return String(s.dropFirst(6)).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            return s
+        }
+
+        switch (entry.style, newStyle) {
+        case (.clinical, .education):
+            if !trimmedTitle.lowercased().hasPrefix("about ") {
+                let baseCurrent = stripAbout(trimmedTitle)
+                let base = (stripAbout(trimmedTitle) == stripAbout(baseOriginal)) ? stripAbout(baseOriginal) : baseCurrent
+                entry.title = base.isEmpty ? "About" : "About \(base)"
+            }
+
+        case (.education, .clinical):
+            if trimmedTitle.lowercased().hasPrefix("about ") {
+                let stripped = stripAbout(trimmedTitle)
+                entry.title = stripped.isEmpty ? baseOriginal : stripped
+            }
+
+        default:
+            break
+        }
+
+        entry.style = newStyle
+    }
     private func needsDeleteWarning(for entry: PlanEntry) -> Bool {
         if entry.templateID == nil {
             let trimmedTitle = entry.title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1055,7 +1162,10 @@ private struct NewPlanView: View {
             let hasEdits = !trimmedAssessment.isEmpty || !trimmedPlan.isEmpty || !titleIsDefault
             return hasEdits
         }
-        return entry.assessment != entry.originalAssessment || entry.plan != entry.originalPlan
+        return entry.assessment != entry.originalAssessment
+            || entry.plan != entry.originalPlan
+            || entry.title != entry.originalTitle
+            || entry.style != entry.originalStyle
     }
 
     private func requestDelete(entryID: UUID) {
@@ -1090,7 +1200,7 @@ private struct NewPlanView: View {
                 patientName: patientName,
                 reportTitle: reportTitle,
                 reportDate: reportDate,
-                templates: exportTemplates,
+                entries: planEntries,
                 letterheadURL: store.selectedLetterheadName.map { store.letterheadURL(named: $0) }
             )
             shareItem = ShareItem(url: url)
@@ -1421,6 +1531,50 @@ private struct ManageTemplateDetail: View {
     @State private var originalAssessment: String = ""
     @State private var originalPlan: String = ""
     @State private var originalLevel: TemplateLevel = .basic
+    @State private var defaultStyle: PlanEntryStyle = .clinical
+    @State private var originalDefaultStyle: PlanEntryStyle = .clinical
+
+    private var leftFieldLabel: String {
+        defaultStyle == .clinical ? "Default Assessment" : "Default Overview"
+    }
+
+    private var rightFieldLabel: String {
+        defaultStyle == .clinical ? "Default Plan" : "Default Treatment Options"
+    }
+
+    private func stripAboutPrefix(_ s: String) -> String {
+        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.lowercased().hasPrefix("about ") {
+            return String(trimmed.dropFirst(6)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return trimmed
+    }
+
+    private func applyAboutTitleIfNeeded(old: PlanEntryStyle, new: PlanEntryStyle) {
+        // Only auto-adjust the title while actively editing.
+        guard isEditing else { return }
+
+        let currentTrimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        switch (old, new) {
+        case (.clinical, .education):
+            // If switching to Education, prepend "About" unless already present.
+            if !currentTrimmed.lowercased().hasPrefix("about ") {
+                let base = stripAboutPrefix(currentTrimmed)
+                title = base.isEmpty ? "About" : "About \(base)"
+            }
+
+        case (.education, .clinical):
+            // If switching back to Clinical, remove the "About" prefix if present.
+            if currentTrimmed.lowercased().hasPrefix("about ") {
+                let base = stripAboutPrefix(currentTrimmed)
+                title = base.isEmpty ? originalTitle : base
+            }
+
+        default:
+            break
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1470,10 +1624,43 @@ private struct ManageTemplateDetail: View {
                 .frame(maxWidth: 360)
             }
             .padding(.horizontal)
+            HStack {
+                Text("Default Format")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Menu {
+                    Button(PlanEntryStyle.clinical.menuTitle) {
+                        defaultStyle = .clinical
+                    }
+
+                    Button(PlanEntryStyle.education.menuTitle) {
+                        defaultStyle = .education
+                    }
+                } label: {
+                    Image(systemName: defaultStyle == .clinical ? "stethoscope" : "info.circle")
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color.secondary.opacity(0.12))
+                        )
+                }
+                .buttonStyle(.plain)
+                .disabled(!isEditing)
+                .accessibilityLabel("Default format")
+                .onChange(of: defaultStyle) { oldValue, newValue in
+                    applyAboutTitleIfNeeded(old: oldValue, new: newValue)
+                }
+            }
+            .padding(.horizontal)
 
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Default Assessment")
+                    Text(leftFieldLabel)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     TextEditor(text: $assessment)
@@ -1485,7 +1672,7 @@ private struct ManageTemplateDetail: View {
                 }
 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Default Plan")
+                    Text(rightFieldLabel)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     TextEditor(text: $plan)
@@ -1523,6 +1710,8 @@ private struct ManageTemplateDetail: View {
         plan = template.plan
         level = template.level
         currentLevel = template.level
+        defaultStyle = template.defaultStyle
+        originalDefaultStyle = template.defaultStyle
 
         // Capture originals so Cancel can revert.
         originalTitle = template.title
@@ -1538,6 +1727,8 @@ private struct ManageTemplateDetail: View {
         originalAssessment = t.assessment
         originalPlan = t.plan
         originalLevel = t.level
+        defaultStyle = t.defaultStyle
+        originalDefaultStyle = t.defaultStyle
 
         title = t.title
         assessment = t.assessment
@@ -1552,6 +1743,7 @@ private struct ManageTemplateDetail: View {
         plan = originalPlan
         level = originalLevel
         currentLevel = originalLevel
+        defaultStyle = originalDefaultStyle
     }
 
     private func commitEdits() {
@@ -1562,6 +1754,7 @@ private struct ManageTemplateDetail: View {
         t.title = title
         t.assessment = assessment
         t.plan = plan
+        t.defaultStyle = defaultStyle
 
         if previousLevel != level {
             t.level = level
@@ -1577,6 +1770,7 @@ private struct ManageTemplateDetail: View {
         originalPlan = t.plan
         originalLevel = t.level
         currentLevel = t.level
+        originalDefaultStyle = t.defaultStyle
     }
 }
 
@@ -1917,7 +2111,7 @@ private struct JSONDocumentPicker: UIViewControllerRepresentable {
 // MARK: - PDF generation
 
 enum PlanPDFBuilder {
-    static func buildPDF(patientName: String, reportTitle: String, reportDate: Date, templates: [ConditionTemplate], letterheadURL: URL?) throws -> URL {
+    static func buildPDF(patientName: String, reportTitle: String, reportDate: Date, entries: [PlanEntry], letterheadURL: URL?) throws -> URL {
         let filenamePatient = patientName.trimmingCharacters(in: .whitespacesAndNewlines)
         let safeName = filenamePatient.isEmpty ? "Patient" : filenamePatient
         let outURL = FileManager.default.temporaryDirectory
@@ -2065,11 +2259,11 @@ enum PlanPDFBuilder {
                 )
             }
 
-            for t in templates {
+            for e in entries {
                 blocks.append(
                     Block(
                         kind: .condTitleBox,
-                        leftText: normalize(t.title).uppercased(),
+                        leftText: normalize(e.title).uppercased(),
                         rightText: nil,
                         font: .boldSystemFont(ofSize: 10),
                         topPad: 0,
@@ -2078,12 +2272,12 @@ enum PlanPDFBuilder {
                     )
                 )
 
-                let a = t.assessment.trimmingCharacters(in: .whitespacesAndNewlines)
+                let a = e.assessment.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !a.isEmpty {
                     blocks.append(
                         Block(
                             kind: .label,
-                            leftText: normalize("Assessment:"),
+                            leftText: normalize("\(e.style.leftLabel):"),
                             rightText: nil,
                             font: .boldSystemFont(ofSize: 11),
                             topPad: 0,
@@ -2104,12 +2298,12 @@ enum PlanPDFBuilder {
                     )
                 }
 
-                let p = t.plan.trimmingCharacters(in: .whitespacesAndNewlines)
+                let p = e.plan.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !p.isEmpty {
                     blocks.append(
                         Block(
                             kind: .label,
-                            leftText: normalize("Plan:"),
+                            leftText: normalize("\(e.style.rightLabel):"),
                             rightText: nil,
                             font: .boldSystemFont(ofSize: 11),
                             topPad: 0,
