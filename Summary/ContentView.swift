@@ -26,7 +26,35 @@ enum TemplateLevel: String, Codable, CaseIterable, Identifiable {
         }
     }
 }
+enum TemplateCategory: String, Codable, CaseIterable, Identifiable {
+    case general
+    case anteriorSegment
+    case dryEye
+    case glaucoma
+    case retina
+    case refractive
+    case contactLens
+    case pediatrics
+    case neuro
+    case meds
 
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .general: return "General"
+        case .anteriorSegment: return "Anterior Segment"
+        case .dryEye: return "Dry Eye"
+        case .glaucoma: return "Glaucoma"
+        case .retina: return "Retina"
+        case .refractive: return "Refractive"
+        case .contactLens: return "Contact Lens"
+        case .pediatrics: return "Pediatrics"
+        case .neuro: return "Neuro"
+        case .meds: return "Meds"
+        }
+    }
+}
 struct ConditionTemplate: Identifiable, Codable, Equatable {
     var id: UUID = UUID()
 
@@ -35,6 +63,7 @@ struct ConditionTemplate: Identifiable, Codable, Equatable {
     var plan: String
 
     var level: TemplateLevel
+    var category: TemplateCategory = .general
     var defaultStyle: PlanEntryStyle = .clinical
     var isPinned: Bool
     /// If false, the template is hidden from the New Plan picker but remains available in Manage.
@@ -46,7 +75,7 @@ struct ConditionTemplate: Identifiable, Codable, Equatable {
     var updatedAt: Date = Date()
 
     enum CodingKeys: String, CodingKey {
-        case id, title, assessment, plan, level, defaultStyle, isPinned, isVisible, order, createdAt, updatedAt
+        case id, title, assessment, plan, level, category, defaultStyle, isPinned, isVisible, order, createdAt, updatedAt
     }
 
     init(
@@ -55,6 +84,7 @@ struct ConditionTemplate: Identifiable, Codable, Equatable {
         assessment: String,
         plan: String,
         level: TemplateLevel,
+        category: TemplateCategory = .general,
         defaultStyle: PlanEntryStyle = .clinical,
         isPinned: Bool,
         isVisible: Bool = true,
@@ -67,6 +97,7 @@ struct ConditionTemplate: Identifiable, Codable, Equatable {
         self.assessment = assessment
         self.plan = plan
         self.level = level
+        self.category = category
         self.defaultStyle = defaultStyle
         self.isPinned = isPinned
         self.isVisible = isVisible
@@ -82,6 +113,7 @@ struct ConditionTemplate: Identifiable, Codable, Equatable {
         self.assessment = try c.decode(String.self, forKey: .assessment)
         self.plan = try c.decode(String.self, forKey: .plan)
         self.level = try c.decode(TemplateLevel.self, forKey: .level)
+        self.category = (try? c.decode(TemplateCategory.self, forKey: .category)) ?? .general
         self.defaultStyle = (try? c.decode(PlanEntryStyle.self, forKey: .defaultStyle)) ?? .clinical
         self.isPinned = try c.decode(Bool.self, forKey: .isPinned)
         self.isVisible = try c.decodeIfPresent(Bool.self, forKey: .isVisible) ?? true
@@ -97,6 +129,7 @@ struct ConditionTemplate: Identifiable, Codable, Equatable {
         try c.encode(assessment, forKey: .assessment)
         try c.encode(plan, forKey: .plan)
         try c.encode(level, forKey: .level)
+        try c.encode(category, forKey: .category)
         try c.encode(defaultStyle, forKey: .defaultStyle)
         try c.encode(isPinned, forKey: .isPinned)
         try c.encode(isVisible, forKey: .isVisible)
@@ -563,6 +596,7 @@ final class AppStore: ObservableObject {
                 assessment: "Dry eye secondary to meibomian gland dysfunction/exposure OU.",
                 plan: "Hot compresses 5–10 minutes daily, then gentle lid massage. Consider lid hygiene and preservative-free artificial tears as needed. If symptoms persist, consider anti-inflammatory dry eye treatment.",
                 level: .basic,
+                category: .dryEye,
                 defaultStyle: .clinical,
                 isPinned: true,
                 isVisible: true,
@@ -573,6 +607,7 @@ final class AppStore: ObservableObject {
                 assessment: "Glaucoma suspect based on optic nerve/IOP risk factors.",
                 plan: "Monitor with periodic IOP checks, optic nerve/OCT imaging, and visual field testing. Escalate to treatment/referral if progression or consistently elevated pressures.",
                 level: .basic,
+                category: .glaucoma,
                 defaultStyle: .clinical,
                 isPinned: true,
                 isVisible: true,
@@ -583,6 +618,7 @@ final class AppStore: ObservableObject {
                 assessment: "Primary open-angle glaucoma.",
                 plan: "Continue/Initiate IOP-lowering therapy as indicated. Monitor with IOP, OCT, and VF at appropriate intervals. Consider ophthalmology co-management.",
                 level: .advanced,
+                category: .glaucoma,
                 defaultStyle: .clinical,
                 isPinned: false,
                 isVisible: true,
@@ -650,11 +686,13 @@ struct ContentView: View {
 private struct NewPlanView: View {
     @EnvironmentObject private var store: AppStore
 
-    @State private var level: TemplateLevel = .basic
     @State private var selectedTemplateID: UUID? = nil
+    @State private var level: TemplateLevel = .basic
+    @State private var category: TemplateCategory = .general
 
     // Sidebar search (New Plan)
     @State private var query: String = ""
+    // BRIDGE_TEST: ok
 
     @State private var reportTitle: String = ""
 
@@ -675,7 +713,7 @@ private struct NewPlanView: View {
     private var pinned: [ConditionTemplate] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let base = store.templates
-            .filter { $0.isPinned && $0.isVisible && $0.level == level }
+            .filter { $0.isPinned && $0.isVisible && $0.level == level && (category == .general || $0.category == category) }
 
         let filtered = q.isEmpty ? base : base.filter {
             $0.title.localizedCaseInsensitiveContains(q) ||
@@ -694,7 +732,7 @@ private struct NewPlanView: View {
     private var others: [ConditionTemplate] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let base = store.templates
-            .filter { !$0.isPinned && $0.isVisible && $0.level == level }
+            .filter { !$0.isPinned && $0.isVisible && $0.level == level && (category == .general || $0.category == category) }
 
         let filtered = q.isEmpty ? base : base.filter {
             $0.title.localizedCaseInsensitiveContains(q) ||
@@ -803,6 +841,31 @@ private struct NewPlanView: View {
             }
             .pickerStyle(.segmented)
             .padding(.horizontal)
+
+            // Category chips
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(TemplateCategory.allCases) { cat in
+                        Button {
+                            category = cat
+                        } label: {
+                            Text(cat.displayName)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(category == cat ? Color.primary : Color.secondary)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(
+                                    Capsule()
+                                        .fill(category == cat ? Color.secondary.opacity(0.22) : Color.secondary.opacity(0.10))
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Category \(cat.displayName)")
+                    }
+                }
+                .padding(.horizontal)
+                .padding(.top, 2)
+            }
 
             // Search (placed under Basic/Advanced)
             HStack(spacing: 8) {
@@ -1290,13 +1353,14 @@ private struct ManageTemplatesView: View {
 
     @State private var query: String = ""
     @State private var level: TemplateLevel = .basic
+    @State private var category: TemplateCategory = .general
     @State private var selectedID: UUID? = nil
     @State private var editMode: EditMode = .inactive
     @State private var pendingDeleteTemplateID: UUID? = nil
     @State private var showDeleteTemplateConfirm: Bool = false
 
     private var filtered: [ConditionTemplate] {
-        let base = store.templates.filter { $0.level == level }
+        let base = store.templates.filter { $0.level == level && (category == .general || $0.category == category) }
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
 
         let list: [ConditionTemplate]
@@ -1387,6 +1451,31 @@ private struct ManageTemplatesView: View {
             }
             .pickerStyle(.segmented)
             .padding(.horizontal)
+
+            // Category chips
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(TemplateCategory.allCases) { cat in
+                        Button {
+                            category = cat
+                        } label: {
+                            Text(cat.displayName)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(category == cat ? Color.primary : Color.secondary)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(
+                                    Capsule()
+                                        .fill(category == cat ? Color.secondary.opacity(0.22) : Color.secondary.opacity(0.10))
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Category \(cat.displayName)")
+                    }
+                }
+                .padding(.horizontal)
+                .padding(.top, 2)
+            }
 
             // Search (placed under Basic/Advanced)
             HStack(spacing: 8) {
@@ -1502,6 +1591,8 @@ private struct ManageTemplatesView: View {
             assessment: "",
             plan: "",
             level: level,
+            category: category,
+            defaultStyle: .clinical,
             isPinned: false,
             isVisible: true,
             order: store.nextOrderValue(for: level),
@@ -1522,6 +1613,7 @@ private struct ManageTemplateDetail: View {
     @State private var assessment: String = ""
     @State private var plan: String = ""
     @State private var level: TemplateLevel = .basic
+    @State private var category: TemplateCategory = .general
 
     @State private var didLoad = false
 
@@ -1531,6 +1623,7 @@ private struct ManageTemplateDetail: View {
     @State private var originalAssessment: String = ""
     @State private var originalPlan: String = ""
     @State private var originalLevel: TemplateLevel = .basic
+    @State private var originalCategory: TemplateCategory = .general
     @State private var defaultStyle: PlanEntryStyle = .clinical
     @State private var originalDefaultStyle: PlanEntryStyle = .clinical
 
@@ -1625,6 +1718,20 @@ private struct ManageTemplateDetail: View {
             }
             .padding(.horizontal)
             HStack {
+                Text("Category")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Picker("Category", selection: $category) {
+                    ForEach(TemplateCategory.allCases) { cat in
+                        Text(cat.displayName).tag(cat)
+                    }
+                }
+                .disabled(!isEditing)
+                .pickerStyle(.menu)
+            }
+            .padding(.horizontal)
+            HStack {
                 Text("Default Format")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -1709,6 +1816,8 @@ private struct ManageTemplateDetail: View {
         assessment = template.assessment
         plan = template.plan
         level = template.level
+        category = template.category
+        originalCategory = template.category
         currentLevel = template.level
         defaultStyle = template.defaultStyle
         originalDefaultStyle = template.defaultStyle
@@ -1727,6 +1836,7 @@ private struct ManageTemplateDetail: View {
         originalAssessment = t.assessment
         originalPlan = t.plan
         originalLevel = t.level
+        originalCategory = t.category
         defaultStyle = t.defaultStyle
         originalDefaultStyle = t.defaultStyle
 
@@ -1734,6 +1844,7 @@ private struct ManageTemplateDetail: View {
         assessment = t.assessment
         plan = t.plan
         level = t.level
+        category = t.category
         currentLevel = t.level
     }
 
@@ -1744,6 +1855,7 @@ private struct ManageTemplateDetail: View {
         level = originalLevel
         currentLevel = originalLevel
         defaultStyle = originalDefaultStyle
+        category = originalCategory
     }
 
     private func commitEdits() {
@@ -1755,6 +1867,7 @@ private struct ManageTemplateDetail: View {
         t.assessment = assessment
         t.plan = plan
         t.defaultStyle = defaultStyle
+        t.category = category
 
         if previousLevel != level {
             t.level = level
@@ -1771,6 +1884,7 @@ private struct ManageTemplateDetail: View {
         originalLevel = t.level
         currentLevel = t.level
         originalDefaultStyle = t.defaultStyle
+        originalCategory = t.category
     }
 }
 
@@ -1791,6 +1905,7 @@ private struct TemplateEditorSheet: View {
     @State private var plan: String = ""
 
     @State private var level: TemplateLevel = .basic
+    @State private var category: TemplateCategory = .general
     @State private var isPinned: Bool = false
     @State private var isVisible: Bool = true
 
@@ -1804,6 +1919,7 @@ private struct TemplateEditorSheet: View {
                         .textInputAutocapitalization(.sentences)
                 }
 
+
                 Section("Level") {
                     Picker("", selection: $level) {
                         ForEach(TemplateLevel.allCases) { lvl in
@@ -1811,6 +1927,15 @@ private struct TemplateEditorSheet: View {
                         }
                     }
                     .pickerStyle(.segmented)
+                }
+
+                Section("Category") {
+                    Picker("", selection: $category) {
+                        ForEach(TemplateCategory.allCases) { cat in
+                            Text(cat.displayName).tag(cat)
+                        }
+                    }
+                    .pickerStyle(.menu)
                 }
 
                 Section {
@@ -1859,6 +1984,7 @@ private struct TemplateEditorSheet: View {
             if loadedID == nil {
                 loadedID = UUID()
                 self.level = defaultLevel
+                self.category = .general
                 self.isPinned = false
                 self.isVisible = true
                 self.title = ""
@@ -1873,6 +1999,7 @@ private struct TemplateEditorSheet: View {
             assessment = t.assessment
             plan = t.plan
             level = t.level
+            category = t.category
             isPinned = t.isPinned
             isVisible = t.isVisible
         }
@@ -1890,6 +2017,7 @@ private struct TemplateEditorSheet: View {
                 assessment: tAssess,
                 plan: tPlan,
                 level: level,
+                category: category,
                 isPinned: isPinned,
                 isVisible: isVisible,
                 order: store.nextOrderValue(for: level),
@@ -1904,6 +2032,7 @@ private struct TemplateEditorSheet: View {
             existing.assessment = tAssess
             existing.plan = tPlan
             existing.level = level
+            existing.category = category
             existing.isPinned = isPinned
             existing.isVisible = isVisible
             existing.updatedAt = Date()
