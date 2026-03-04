@@ -217,7 +217,6 @@ extension PlanEntry {
 struct SavedPlan: Identifiable, Codable, Equatable {
     var id: UUID = UUID()
     var savedAt: Date = Date()
-    var level: TemplateLevel
 
     // NOTE: Not stored for privacy when clearing a plan.
     var patientName: String
@@ -229,13 +228,12 @@ struct SavedPlan: Identifiable, Codable, Equatable {
     var entries: [PlanEntry]
 
     enum CodingKeys: String, CodingKey {
-        case id, savedAt, level, patientName, reportTitle, reportDate, entries
+        case id, savedAt, patientName, reportTitle, reportDate, entries
     }
 
     init(
         id: UUID = UUID(),
         savedAt: Date = Date(),
-        level: TemplateLevel,
         patientName: String,
         reportTitle: String,
         reportDate: Date,
@@ -243,7 +241,6 @@ struct SavedPlan: Identifiable, Codable, Equatable {
     ) {
         self.id = id
         self.savedAt = savedAt
-        self.level = level
         self.patientName = patientName
         self.reportTitle = reportTitle
         self.reportDate = reportDate
@@ -254,7 +251,6 @@ struct SavedPlan: Identifiable, Codable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         self.savedAt = try c.decodeIfPresent(Date.self, forKey: .savedAt) ?? Date()
-        self.level = try c.decode(TemplateLevel.self, forKey: .level)
         self.patientName = try c.decodeIfPresent(String.self, forKey: .patientName) ?? ""
         self.reportTitle = try c.decodeIfPresent(String.self, forKey: .reportTitle) ?? ""
         self.reportDate = try c.decodeIfPresent(Date.self, forKey: .reportDate) ?? Date()
@@ -265,7 +261,6 @@ struct SavedPlan: Identifiable, Codable, Equatable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(id, forKey: .id)
         try c.encode(savedAt, forKey: .savedAt)
-        try c.encode(level, forKey: .level)
         try c.encode(patientName, forKey: .patientName)
         try c.encode(reportTitle, forKey: .reportTitle)
         try c.encode(reportDate, forKey: .reportDate)
@@ -543,7 +538,7 @@ final class AppStore: ObservableObject {
 
     // MARK: History
 
-    func addToHistory(level: TemplateLevel, reportTitle: String, reportDate: Date, patientName: String, entries: [PlanEntry]) {
+    func addToHistory(reportTitle: String, reportDate: Date, patientName: String, entries: [PlanEntry]) {
         // Don’t store completely empty plans
         let hasAnyContent = !patientName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                             entries.contains(where: {
@@ -553,7 +548,7 @@ final class AppStore: ObservableObject {
                             })
         guard hasAnyContent else { return }
 
-        let item = SavedPlan(level: level, patientName: patientName, reportTitle: reportTitle, reportDate: reportDate, entries: entries)
+        let item = SavedPlan(patientName: patientName, reportTitle: reportTitle, reportDate: reportDate, entries: entries)
         history.insert(item, at: 0)
         if history.count > 5 {
             history = Array(history.prefix(5))
@@ -687,7 +682,6 @@ private struct NewPlanView: View {
     @EnvironmentObject private var store: AppStore
 
     @State private var selectedTemplateID: UUID? = nil
-    @State private var level: TemplateLevel = .basic
     @State private var category: TemplateCategory = .general
 
     // Sidebar search (New Plan)
@@ -713,7 +707,7 @@ private struct NewPlanView: View {
     private var pinned: [ConditionTemplate] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let base = store.templates
-            .filter { $0.isPinned && $0.isVisible && $0.level == level && (category == .general || $0.category == category) }
+            .filter { $0.isPinned && $0.isVisible && (category == .general || $0.category == category) }
 
         let filtered = q.isEmpty ? base : base.filter {
             $0.title.localizedCaseInsensitiveContains(q) ||
@@ -732,7 +726,7 @@ private struct NewPlanView: View {
     private var others: [ConditionTemplate] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let base = store.templates
-            .filter { !$0.isPinned && $0.isVisible && $0.level == level && (category == .general || $0.category == category) }
+            .filter { !$0.isPinned && $0.isVisible && (category == .general || $0.category == category) }
 
         let filtered = q.isEmpty ? base : base.filter {
             $0.title.localizedCaseInsensitiveContains(q) ||
@@ -777,7 +771,6 @@ private struct NewPlanView: View {
             HistorySheet(
                 history: store.history,
                 onRestore: { saved in
-                    level = saved.level
                     reportTitle = saved.reportTitle
                     reportDate = saved.reportDate
                     patientName = saved.patientName
@@ -834,13 +827,6 @@ private struct NewPlanView: View {
                     }
                 }
             }
-            Picker("", selection: $level) {
-                ForEach(TemplateLevel.allCases) { lvl in
-                    Text(lvl.displayName).tag(lvl)
-                }
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal)
 
             // Category chips
             ScrollView(.horizontal, showsIndicators: false) {
@@ -1247,7 +1233,7 @@ private struct NewPlanView: View {
 
     private func clearForm() {
         // Privacy: do not store patient name in history.
-        store.addToHistory(level: level, reportTitle: reportTitle, reportDate: reportDate, patientName: "", entries: planEntries)
+        store.addToHistory(reportTitle: reportTitle, reportDate: reportDate, patientName: "", entries: planEntries)
 
         // Clear form fields.
         reportTitle = ""
@@ -1303,10 +1289,6 @@ private struct HistorySheet: View {
                                         .font(.headline)
 
                                     HStack(spacing: 10) {
-                                        Text(item.level.displayName)
-                                            .font(.subheadline)
-                                            .foregroundStyle(.secondary)
-
                                         Text(item.savedAt.formatted(date: .abbreviated, time: .shortened))
                                             .font(.subheadline)
                                             .foregroundStyle(.secondary)
@@ -1352,7 +1334,6 @@ private struct ManageTemplatesView: View {
     @EnvironmentObject private var store: AppStore
 
     @State private var query: String = ""
-    @State private var level: TemplateLevel = .basic
     @State private var category: TemplateCategory = .general
     @State private var selectedID: UUID? = nil
     @State private var editMode: EditMode = .inactive
@@ -1360,7 +1341,7 @@ private struct ManageTemplatesView: View {
     @State private var showDeleteTemplateConfirm: Bool = false
 
     private var filtered: [ConditionTemplate] {
-        let base = store.templates.filter { $0.level == level && (category == .general || $0.category == category) }
+        let base = store.templates.filter { (category == .general || $0.category == category) }
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
 
         let list: [ConditionTemplate]
@@ -1444,13 +1425,6 @@ private struct ManageTemplatesView: View {
             .padding(.horizontal)
             .padding(.top, 8)
 
-            Picker("", selection: $level) {
-                ForEach(TemplateLevel.allCases) { lvl in
-                    Text(lvl.displayName).tag(lvl)
-                }
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal)
 
             // Category chips
             ScrollView(.horizontal, showsIndicators: false) {
@@ -1563,7 +1537,7 @@ private struct ManageTemplatesView: View {
 
                         var ids = filtered.map { $0.id }
                         ids.move(fromOffsets: from, toOffset: to)
-                        store.applyReorder(level: level, orderedIDs: ids)
+                        store.applyReorder(level: .basic, orderedIDs: ids)
                     }
                 }
             }
@@ -1574,7 +1548,7 @@ private struct ManageTemplatesView: View {
     private var manageDetail: some View {
         Group {
             if let t = selectedTemplate {
-                ManageTemplateDetail(template: t, currentLevel: $level)
+                ManageTemplateDetail(template: t)
             } else {
                 ContentUnavailableView(
                     "Select a template",
@@ -1590,12 +1564,12 @@ private struct ManageTemplatesView: View {
             title: "New Condition",
             assessment: "",
             plan: "",
-            level: level,
+            level: .basic,
             category: category,
             defaultStyle: .clinical,
             isPinned: false,
             isVisible: true,
-            order: store.nextOrderValue(for: level),
+            order: store.nextOrderValue(for: .basic),
             createdAt: Date(),
             updatedAt: Date()
         )
@@ -1607,12 +1581,10 @@ private struct ManageTemplateDetail: View {
     @EnvironmentObject private var store: AppStore
 
     let template: ConditionTemplate
-    @Binding var currentLevel: TemplateLevel
 
     @State private var title: String = ""
     @State private var assessment: String = ""
     @State private var plan: String = ""
-    @State private var level: TemplateLevel = .basic
     @State private var category: TemplateCategory = .general
 
     @State private var didLoad = false
@@ -1703,21 +1675,6 @@ private struct ManageTemplateDetail: View {
             .padding(.top, 8)
 
             HStack {
-                Text("Level")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Picker("Level", selection: $level) {
-                    ForEach(TemplateLevel.allCases) { lvl in
-                        Text(lvl.displayName).tag(lvl)
-                    }
-                }
-                .disabled(!isEditing)
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 360)
-            }
-            .padding(.horizontal)
-            HStack {
                 Text("Category")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -1803,9 +1760,6 @@ private struct ManageTemplateDetail: View {
             isEditing = false
             loadIfNeeded()
         }
-        .onChange(of: level) { _, _ in
-            currentLevel = level
-        }
     }
 
     private func loadIfNeeded() {
@@ -1815,10 +1769,8 @@ private struct ManageTemplateDetail: View {
         title = template.title
         assessment = template.assessment
         plan = template.plan
-        level = template.level
         category = template.category
         originalCategory = template.category
-        currentLevel = template.level
         defaultStyle = template.defaultStyle
         originalDefaultStyle = template.defaultStyle
 
@@ -1826,7 +1778,6 @@ private struct ManageTemplateDetail: View {
         originalTitle = template.title
         originalAssessment = template.assessment
         originalPlan = template.plan
-        originalLevel = template.level
     }
 
     private func beginEditing() {
@@ -1835,7 +1786,6 @@ private struct ManageTemplateDetail: View {
         originalTitle = t.title
         originalAssessment = t.assessment
         originalPlan = t.plan
-        originalLevel = t.level
         originalCategory = t.category
         defaultStyle = t.defaultStyle
         originalDefaultStyle = t.defaultStyle
@@ -1843,17 +1793,13 @@ private struct ManageTemplateDetail: View {
         title = t.title
         assessment = t.assessment
         plan = t.plan
-        level = t.level
         category = t.category
-        currentLevel = t.level
     }
 
     private func discardEdits() {
         title = originalTitle
         assessment = originalAssessment
         plan = originalPlan
-        level = originalLevel
-        currentLevel = originalLevel
         defaultStyle = originalDefaultStyle
         category = originalCategory
     }
@@ -1869,10 +1815,6 @@ private struct ManageTemplateDetail: View {
         t.defaultStyle = defaultStyle
         t.category = category
 
-        if previousLevel != level {
-            t.level = level
-            t.order = store.nextOrderValue(for: level)
-        }
 
         t.updatedAt = Date()
         store.updateTemplate(t)
@@ -1881,8 +1823,6 @@ private struct ManageTemplateDetail: View {
         originalTitle = t.title
         originalAssessment = t.assessment
         originalPlan = t.plan
-        originalLevel = t.level
-        currentLevel = t.level
         originalDefaultStyle = t.defaultStyle
         originalCategory = t.category
     }
@@ -1898,13 +1838,11 @@ private struct TemplateEditorSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     let mode: TemplateEditorMode
-    let defaultLevel: TemplateLevel
 
     @State private var title: String = ""
     @State private var assessment: String = ""
     @State private var plan: String = ""
 
-    @State private var level: TemplateLevel = .basic
     @State private var category: TemplateCategory = .general
     @State private var isPinned: Bool = false
     @State private var isVisible: Bool = true
@@ -1919,15 +1857,6 @@ private struct TemplateEditorSheet: View {
                         .textInputAutocapitalization(.sentences)
                 }
 
-
-                Section("Level") {
-                    Picker("", selection: $level) {
-                        ForEach(TemplateLevel.allCases) { lvl in
-                            Text(lvl.displayName).tag(lvl)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                }
 
                 Section("Category") {
                     Picker("", selection: $category) {
@@ -1983,7 +1912,6 @@ private struct TemplateEditorSheet: View {
         case .create:
             if loadedID == nil {
                 loadedID = UUID()
-                self.level = defaultLevel
                 self.category = .general
                 self.isPinned = false
                 self.isVisible = true
@@ -1998,7 +1926,6 @@ private struct TemplateEditorSheet: View {
             title = t.title
             assessment = t.assessment
             plan = t.plan
-            level = t.level
             category = t.category
             isPinned = t.isPinned
             isVisible = t.isVisible
@@ -2016,11 +1943,12 @@ private struct TemplateEditorSheet: View {
                 title: tTitle,
                 assessment: tAssess,
                 plan: tPlan,
-                level: level,
+                level: .basic,
                 category: category,
+                defaultStyle: .clinical,
                 isPinned: isPinned,
                 isVisible: isVisible,
-                order: store.nextOrderValue(for: level),
+                order: store.nextOrderValue(for: .basic),
                 createdAt: Date(),
                 updatedAt: Date()
             )
@@ -2031,7 +1959,6 @@ private struct TemplateEditorSheet: View {
             existing.title = tTitle
             existing.assessment = tAssess
             existing.plan = tPlan
-            existing.level = level
             existing.category = category
             existing.isPinned = isPinned
             existing.isVisible = isVisible
