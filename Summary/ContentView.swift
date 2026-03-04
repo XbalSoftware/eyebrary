@@ -13,48 +13,26 @@ import PDFKit
 
 // MARK: - Data Model
 
-enum TemplateLevel: String, Codable, CaseIterable, Identifiable {
+
+struct CategoryItem: Identifiable, Codable, Equatable {
+    var id: String
+    var name: String
+    var order: Int
+}
+// Category identifiers are user-editable (via Settings), so this is a String id.
+typealias TemplateCategory = String
+
+extension TemplateCategory {
+    // Built-in defaults (keep stable so existing data continues to match)
+    static let general: TemplateCategory = "general"
+    static let dryEye: TemplateCategory = "dryEye"
+    static let glaucoma: TemplateCategory = "glaucoma"
+}
+private enum LegacyTemplateLevel: String, Codable {
     case basic
     case advanced
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .basic: return "Basic"
-        case .advanced: return "Advanced"
-        }
-    }
 }
-enum TemplateCategory: String, Codable, CaseIterable, Identifiable {
-    case general
-    case anteriorSegment
-    case dryEye
-    case glaucoma
-    case retina
-    case refractive
-    case contactLens
-    case pediatrics
-    case neuro
-    case meds
 
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .general: return "General"
-        case .anteriorSegment: return "Anterior Segment"
-        case .dryEye: return "Dry Eye"
-        case .glaucoma: return "Glaucoma"
-        case .retina: return "Retina"
-        case .refractive: return "Refractive"
-        case .contactLens: return "Contact Lens"
-        case .pediatrics: return "Pediatrics"
-        case .neuro: return "Neuro"
-        case .meds: return "Meds"
-        }
-    }
-}
 struct ConditionTemplate: Identifiable, Codable, Equatable {
     var id: UUID = UUID()
 
@@ -62,20 +40,19 @@ struct ConditionTemplate: Identifiable, Codable, Equatable {
     var assessment: String
     var plan: String
 
-    var level: TemplateLevel
     var category: TemplateCategory = .general
     var defaultStyle: PlanEntryStyle = .clinical
     var isPinned: Bool
     /// If false, the template is hidden from the New Plan picker but remains available in Manage.
     var isVisible: Bool = true
-    /// Controls display ordering within a level (lower first). Optional for backward compatibility.
+    /// Controls display ordering (lower first). Optional for backward compatibility.
     var order: Int? = nil
 
     var createdAt: Date = Date()
     var updatedAt: Date = Date()
 
     enum CodingKeys: String, CodingKey {
-        case id, title, assessment, plan, level, category, defaultStyle, isPinned, isVisible, order, createdAt, updatedAt
+        case id, title, assessment, plan, category, defaultStyle, isPinned, isVisible, order, createdAt, updatedAt, level
     }
 
     init(
@@ -83,7 +60,6 @@ struct ConditionTemplate: Identifiable, Codable, Equatable {
         title: String,
         assessment: String,
         plan: String,
-        level: TemplateLevel,
         category: TemplateCategory = .general,
         defaultStyle: PlanEntryStyle = .clinical,
         isPinned: Bool,
@@ -96,7 +72,6 @@ struct ConditionTemplate: Identifiable, Codable, Equatable {
         self.title = title
         self.assessment = assessment
         self.plan = plan
-        self.level = level
         self.category = category
         self.defaultStyle = defaultStyle
         self.isPinned = isPinned
@@ -112,7 +87,7 @@ struct ConditionTemplate: Identifiable, Codable, Equatable {
         self.title = try c.decode(String.self, forKey: .title)
         self.assessment = try c.decode(String.self, forKey: .assessment)
         self.plan = try c.decode(String.self, forKey: .plan)
-        self.level = try c.decode(TemplateLevel.self, forKey: .level)
+        _ = try? c.decode(LegacyTemplateLevel.self, forKey: .level)
         self.category = (try? c.decode(TemplateCategory.self, forKey: .category)) ?? .general
         self.defaultStyle = (try? c.decode(PlanEntryStyle.self, forKey: .defaultStyle)) ?? .clinical
         self.isPinned = try c.decode(Bool.self, forKey: .isPinned)
@@ -128,7 +103,6 @@ struct ConditionTemplate: Identifiable, Codable, Equatable {
         try c.encode(title, forKey: .title)
         try c.encode(assessment, forKey: .assessment)
         try c.encode(plan, forKey: .plan)
-        try c.encode(level, forKey: .level)
         try c.encode(category, forKey: .category)
         try c.encode(defaultStyle, forKey: .defaultStyle)
         try c.encode(isPinned, forKey: .isPinned)
@@ -319,68 +293,63 @@ final class AppStore: ObservableObject {
         didSet { persistHistory() }
     }
 
+    @Published var categories: [CategoryItem] = [] {
+        didSet { persistCategories() }
+    }
+
     private let templatesKey = "summary.conditionTemplates.v1"
     private let letterheadsKey = "summary.letterheads.v1"
     private let historyKey = "summary.history.v1"
+    private let categoriesKey = "summary.categories.v1"
 
     init() {
         loadTemplates()
         ensureTemplateOrdering()
         loadLetterheads()
         loadHistory()
+        loadCategories()
         if templates.isEmpty { seedDefaults() }
     }
 
     // MARK: Ordering
 
     private func ensureTemplateOrdering() {
-        // Assign stable ordering for any templates missing `order`.
-        var changed = false
-        for lvl in TemplateLevel.allCases {
-            let inLevel = templates
-                .filter { $0.level == lvl }
-                .sorted { a, b in
-                    // If both have order use it, otherwise fall back to pinned then title.
-                    let ao = a.order ?? Int.max
-                    let bo = b.order ?? Int.max
-                    if ao != bo { return ao < bo }
-                    if a.isPinned != b.isPinned { return a.isPinned && !b.isPinned }
-                    return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
-                }
+        // Ensure every template has a stable order. If any are missing, assign them.
+        if templates.allSatisfy({ $0.order != nil }) { return }
 
-            var next = 0
-            for t in inLevel {
-                if let idx = templates.firstIndex(where: { $0.id == t.id }) {
-                    if templates[idx].order == nil {
-                        templates[idx].order = next
-                        changed = true
-                    }
-                    next += 1
+        // Sort in a stable, reasonable default way.
+        let sorted = templates.sorted { a, b in
+            if a.isPinned != b.isPinned { return a.isPinned && !b.isPinned }
+            let ao = a.order ?? Int.max
+            let bo = b.order ?? Int.max
+            if ao != bo { return ao < bo }
+            return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
+        }
+
+        for (idx, t) in sorted.enumerated() {
+            if let i = templates.firstIndex(where: { $0.id == t.id }) {
+                if templates[i].order == nil {
+                    templates[i].order = idx
                 }
             }
         }
 
-        if changed {
-            // Trigger persistence
-            templates = templates
-        }
+        // Trigger persistence
+        templates = templates
     }
 
-    func applyReorder(level: TemplateLevel, orderedIDs: [UUID]) {
-        // Reassign contiguous order values within a level.
+    func applyReorder(orderedIDs: [UUID]) {
+        // Reassign contiguous order values for the templates in the provided order.
         for (i, id) in orderedIDs.enumerated() {
-            if let idx = templates.firstIndex(where: { $0.id == id && $0.level == level }) {
+            if let idx = templates.firstIndex(where: { $0.id == id }) {
                 templates[idx].order = i
                 templates[idx].updatedAt = Date()
             }
         }
     }
 
-    func nextOrderValue(for level: TemplateLevel) -> Int {
-        let maxOrder = templates
-            .filter { $0.level == level }
-            .compactMap { $0.order }
-            .max() ?? -1
+    func nextOrderValue() -> Int {
+        let maxOrder = templates.compactMap { $0.order }.max() ?? -1
         return maxOrder + 1
     }
 
@@ -389,7 +358,7 @@ final class AppStore: ObservableObject {
     func addTemplate(_ t: ConditionTemplate) {
         var new = t
         if new.order == nil {
-            new.order = nextOrderValue(for: new.level)
+            new.order = nextOrderValue()
         }
         templates.insert(new, at: 0)
     }
@@ -584,14 +553,59 @@ final class AppStore: ObservableObject {
         }
     }
 
+    // MARK: Categories
+
+    private func defaultCategories() -> [CategoryItem] {
+        // Stable, built-in set. Users can customize later.
+        let names: [(String, String)] = [
+            ("general", "General"),
+            ("anteriorSegment", "Anterior Segment"),
+            ("dryEye", "Dry Eye"),
+            ("glaucoma", "Glaucoma"),
+            ("retina", "Retina"),
+            ("refractive", "Refractive"),
+            ("contactLens", "Contact Lens"),
+            ("pediatrics", "Pediatrics"),
+            ("neuro", "Neuro"),
+            ("meds", "Meds")
+        ]
+
+        return names.enumerated().map { idx, pair in
+            CategoryItem(id: pair.0, name: pair.1, order: idx)
+        }
+    }
+
+    private func loadCategories() {
+        guard let data = UserDefaults.standard.data(forKey: categoriesKey) else {
+            categories = defaultCategories()
+            return
+        }
+        do {
+            categories = try JSONDecoder.standard.decode([CategoryItem].self, from: data)
+            if categories.isEmpty {
+                categories = defaultCategories()
+            }
+        } catch {
+            categories = defaultCategories()
+        }
+    }
+
+    private func persistCategories() {
+        do {
+            let data = try JSONEncoder.standard.encode(categories)
+            UserDefaults.standard.set(data, forKey: categoriesKey)
+        } catch {
+            // ignore
+        }
+    }
+
     private func factoryDefaultTemplates() -> [ConditionTemplate] {
         [
             ConditionTemplate(
                 title: "DRY EYE CAUSED BY\nMEIBOMIAN GLAND\nDYSFUNCTION",
                 assessment: "Dry eye secondary to meibomian gland dysfunction/exposure OU.",
                 plan: "Hot compresses 5–10 minutes daily, then gentle lid massage. Consider lid hygiene and preservative-free artificial tears as needed. If symptoms persist, consider anti-inflammatory dry eye treatment.",
-                level: .basic,
-                category: .dryEye,
+                category: "dryEye",
                 defaultStyle: .clinical,
                 isPinned: true,
                 isVisible: true,
@@ -601,8 +615,7 @@ final class AppStore: ObservableObject {
                 title: "RISK OF GLAUCOMA",
                 assessment: "Glaucoma suspect based on optic nerve/IOP risk factors.",
                 plan: "Monitor with periodic IOP checks, optic nerve/OCT imaging, and visual field testing. Escalate to treatment/referral if progression or consistently elevated pressures.",
-                level: .basic,
-                category: .glaucoma,
+                category: "glaucoma",
                 defaultStyle: .clinical,
                 isPinned: true,
                 isVisible: true,
@@ -612,8 +625,7 @@ final class AppStore: ObservableObject {
                 title: "GLAUCOMA",
                 assessment: "Primary open-angle glaucoma.",
                 plan: "Continue/Initiate IOP-lowering therapy as indicated. Monitor with IOP, OCT, and VF at appropriate intervals. Consider ophthalmology co-management.",
-                level: .advanced,
-                category: .glaucoma,
+                category: "glaucoma",
                 defaultStyle: .clinical,
                 isPinned: false,
                 isVisible: true,
@@ -623,6 +635,9 @@ final class AppStore: ObservableObject {
     }
 
     private func seedDefaults() {
+        if categories.isEmpty {
+            categories = defaultCategories()
+        }
         templates = factoryDefaultTemplates()
     }
 
@@ -631,6 +646,7 @@ final class AppStore: ObservableObject {
         UserDefaults.standard.removeObject(forKey: templatesKey)
         UserDefaults.standard.removeObject(forKey: letterheadsKey)
         UserDefaults.standard.removeObject(forKey: historyKey)
+        UserDefaults.standard.removeObject(forKey: categoriesKey)
 
         // Delete any saved letterhead PDF files
         let dir = letterheadsDirectoryURL()
@@ -647,6 +663,7 @@ final class AppStore: ObservableObject {
 
         templates = factoryDefaultTemplates()
         ensureTemplateOrdering()
+        categories = defaultCategories()
     }
 }
 
@@ -831,11 +848,13 @@ private struct NewPlanView: View {
             // Category chips
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    ForEach(TemplateCategory.allCases) { cat in
+                    let cats = store.categories.sorted { $0.order < $1.order }
+                    ForEach(cats) { item in
+                        let cat: TemplateCategory = item.id.isEmpty ? .general : item.id
                         Button {
                             category = cat
                         } label: {
-                            Text(cat.displayName)
+                            Text(item.name)
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundStyle(category == cat ? Color.primary : Color.secondary)
                                 .padding(.horizontal, 12)
@@ -846,7 +865,7 @@ private struct NewPlanView: View {
                                 )
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("Category \(cat.displayName)")
+                        .accessibilityLabel("Category \(item.name)")
                     }
                 }
                 .padding(.horizontal)
@@ -1429,11 +1448,13 @@ private struct ManageTemplatesView: View {
             // Category chips
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    ForEach(TemplateCategory.allCases) { cat in
+                    let cats = store.categories.sorted { $0.order < $1.order }
+                    ForEach(cats) { item in
+                        let cat: TemplateCategory = item.id.isEmpty ? .general : item.id
                         Button {
                             category = cat
                         } label: {
-                            Text(cat.displayName)
+                            Text(item.name)
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundStyle(category == cat ? Color.primary : Color.secondary)
                                 .padding(.horizontal, 12)
@@ -1444,7 +1465,7 @@ private struct ManageTemplatesView: View {
                                 )
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("Category \(cat.displayName)")
+                        .accessibilityLabel("Category \(item.name)")
                     }
                 }
                 .padding(.horizontal)
@@ -1535,9 +1556,9 @@ private struct ManageTemplatesView: View {
                         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
                         guard q.isEmpty else { return }
 
-                        var ids = filtered.map { $0.id }
-                        ids.move(fromOffsets: from, toOffset: to)
-                        store.applyReorder(level: .basic, orderedIDs: ids)
+                    var ids = filtered.map { $0.id }
+                    ids.move(fromOffsets: from, toOffset: to)
+                    store.applyReorder(orderedIDs: ids)
                     }
                 }
             }
@@ -1548,7 +1569,7 @@ private struct ManageTemplatesView: View {
     private var manageDetail: some View {
         Group {
             if let t = selectedTemplate {
-                ManageTemplateDetail(template: t)
+                ManageTemplateDetail(selectedID: $selectedID, template: t)
             } else {
                 ContentUnavailableView(
                     "Select a template",
@@ -1564,12 +1585,11 @@ private struct ManageTemplatesView: View {
             title: "New Condition",
             assessment: "",
             plan: "",
-            level: .basic,
             category: category,
             defaultStyle: .clinical,
             isPinned: false,
             isVisible: true,
-            order: store.nextOrderValue(for: .basic),
+            order: store.nextOrderValue(),
             createdAt: Date(),
             updatedAt: Date()
         )
@@ -1579,6 +1599,8 @@ private struct ManageTemplatesView: View {
 }
 private struct ManageTemplateDetail: View {
     @EnvironmentObject private var store: AppStore
+    @Binding var selectedID: UUID?
+    @State private var showDeleteConfirm: Bool = false
 
     let template: ConditionTemplate
 
@@ -1594,7 +1616,6 @@ private struct ManageTemplateDetail: View {
     @State private var originalTitle: String = ""
     @State private var originalAssessment: String = ""
     @State private var originalPlan: String = ""
-    @State private var originalLevel: TemplateLevel = .basic
     @State private var originalCategory: TemplateCategory = .general
     @State private var defaultStyle: PlanEntryStyle = .clinical
     @State private var originalDefaultStyle: PlanEntryStyle = .clinical
@@ -1680,8 +1701,9 @@ private struct ManageTemplateDetail: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 Picker("Category", selection: $category) {
-                    ForEach(TemplateCategory.allCases) { cat in
-                        Text(cat.displayName).tag(cat)
+                    let cats = store.categories.sorted { $0.order < $1.order }
+                    ForEach(cats) { item in
+                        Text(item.name).tag(item.id.isEmpty ? .general : item.id)
                     }
                 }
                 .disabled(!isEditing)
@@ -1750,6 +1772,33 @@ private struct ManageTemplateDetail: View {
             .padding(.horizontal)
 
             Spacer()
+
+            if isEditing {
+                HStack {
+                    Spacer()
+
+                    Button(role: .destructive) {
+                        showDeleteConfirm = true
+                    } label: {
+                        Label("Delete Template", systemImage: "trash")
+                            .font(.subheadline)
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .padding(.horizontal)
+                .padding(.bottom, 12)
+            }
+        }
+        .alert("Delete template?", isPresented: $showDeleteConfirm) {
+            Button("Delete", role: .destructive) {
+                let id = template.id
+                store.templates.removeAll { $0.id == id }
+                selectedID = nil
+                isEditing = false
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will permanently delete the template.")
         }
         .onAppear {
             loadIfNeeded()
@@ -1808,7 +1857,6 @@ private struct ManageTemplateDetail: View {
         guard didLoad else { return }
         guard var t = store.template(id: template.id) else { return }
 
-        let previousLevel = t.level
         t.title = title
         t.assessment = assessment
         t.plan = plan
@@ -1860,8 +1908,9 @@ private struct TemplateEditorSheet: View {
 
                 Section("Category") {
                     Picker("", selection: $category) {
-                        ForEach(TemplateCategory.allCases) { cat in
-                            Text(cat.displayName).tag(cat)
+                        let cats = store.categories.sorted { $0.order < $1.order }
+                        ForEach(cats) { item in
+                            Text(item.name).tag(item.id.isEmpty ? .general : item.id)
                         }
                     }
                     .pickerStyle(.menu)
@@ -1943,12 +1992,11 @@ private struct TemplateEditorSheet: View {
                 title: tTitle,
                 assessment: tAssess,
                 plan: tPlan,
-                level: .basic,
                 category: category,
                 defaultStyle: .clinical,
                 isPinned: isPinned,
                 isVisible: isVisible,
-                order: store.nextOrderValue(for: .basic),
+                order: store.nextOrderValue(),
                 createdAt: Date(),
                 updatedAt: Date()
             )
@@ -2046,6 +2094,18 @@ private struct SettingsView: View {
             }
 
             Section {
+                NavigationLink {
+                    CategoriesEditorView()
+                } label: {
+                    Label("Edit categories", systemImage: "tag")
+                }
+            } header: {
+                Text("Categories")
+            } footer: {
+                Text("Categories control the chips shown at the top of New Plan and Manage.")
+            }
+
+            Section {
                 Button(role: .destructive) {
                     showFactoryResetConfirm = true
                 } label: {
@@ -2104,6 +2164,240 @@ private struct SettingsView: View {
                 break
             }
         }
+    }
+}
+
+private struct CategoriesEditorView: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.editMode) private var editMode
+
+    @FocusState private var focusedCategoryID: String?
+    @State private var lastFocusedCategoryID: String? = nil
+
+    @State private var showAddCategorySheet: Bool = false
+    @State private var newCategoryName: String = ""
+    @State private var pendingScrollToID: String? = nil
+    @State private var pendingDeleteOffsets: IndexSet? = nil
+    @State private var showDeleteCategoryConfirm: Bool = false
+
+    private let tempIDPrefix = "tmp_"
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            List {
+                ForEach($store.categories) { $cat in
+                    VStack(alignment: .leading, spacing: 4) {
+                        TextField("Category", text: $cat.name)
+                            .textInputAutocapitalization(.words)
+                            .autocorrectionDisabled(false)
+                            .disabled(!(editMode?.wrappedValue.isEditing ?? false))
+                            .focused($focusedCategoryID, equals: cat.id)
+                            .submitLabel(.done)
+                            .onSubmit {
+                                // Only finalize the id once the user is done typing.
+                                let trimmed = cat.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                                guard !trimmed.isEmpty else { return }
+                                if cat.id.hasPrefix(tempIDPrefix) {
+                                    finalizeTempCategoryID(tempID: cat.id, name: trimmed)
+                                }
+                            }
+
+                        if (editMode?.wrappedValue.isEditing ?? false) {
+                            Text("Category ID (developer use only): \(cat.id)")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                    .id(cat.id)
+                }
+                .onDelete(perform: requestDelete)
+                .onMove(perform: move)
+            }
+            .onChange(of: pendingScrollToID) { _, newValue in
+                guard let id = newValue else { return }
+                DispatchQueue.main.async {
+                    withAnimation {
+                        proxy.scrollTo(id, anchor: .bottom)
+                    }
+                    pendingScrollToID = nil
+                }
+            }
+        }
+        .navigationTitle("Categories")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Done") { dismiss() }
+            }
+
+            ToolbarItem(placement: .topBarTrailing) {
+                EditButton()
+            }
+
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    // Enter edit mode so accidental edits don't happen outside of it.
+                    editMode?.wrappedValue = .active
+                    newCategoryName = ""
+                    showAddCategorySheet = true
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .accessibilityLabel("Add category")
+            }
+        }
+        .onAppear {
+            store.categories.sort { $0.order < $1.order }
+        }
+        .onChange(of: focusedCategoryID) { _, newValue in
+            // If focus moved away from a temporary row, finalize it using the full name.
+            if let old = lastFocusedCategoryID,
+               old.hasPrefix(tempIDPrefix),
+               old != newValue,
+               let idx = store.categories.firstIndex(where: { $0.id == old }) {
+
+                let name = store.categories[idx].name.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !name.isEmpty {
+                    finalizeTempCategoryID(tempID: old, name: name)
+                }
+            }
+            lastFocusedCategoryID = newValue
+        }
+        .sheet(isPresented: $showAddCategorySheet) {
+            NavigationStack {
+                Form {
+                    Section("New Category") {
+                        TextField("Category name", text: $newCategoryName)
+                            .textInputAutocapitalization(.words)
+                            .submitLabel(.done)
+                    }
+                }
+                .navigationTitle("Add Category")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") {
+                            showAddCategorySheet = false
+                        }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Add") {
+                            let trimmed = newCategoryName.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard !trimmed.isEmpty else { return }
+                            let newID = makeUniqueID(from: trimmed)
+                            let nextOrder = store.categories.count
+                            store.categories.append(CategoryItem(id: newID, name: trimmed, order: nextOrder))
+                            store.categories.sort { $0.order < $1.order }
+                            for i in store.categories.indices { store.categories[i].order = i }
+                            pendingScrollToID = newID
+                            focusedCategoryID = nil
+                            showAddCategorySheet = false
+                        }
+                        .disabled(newCategoryName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+            }
+        }
+        .alert("Delete category?", isPresented: $showDeleteCategoryConfirm) {
+            Button("Delete", role: .destructive) {
+                if let offsets = pendingDeleteOffsets {
+                    deleteConfirmed(at: offsets)
+                }
+                pendingDeleteOffsets = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingDeleteOffsets = nil
+            }
+        } message: {
+            Text("Deleting a category will move any templates assigned to it back to General. This cannot be undone.")
+        }
+    }
+    private func finalizeTempCategoryID(tempID: String, name: String) {
+        let newID = makeUniqueID(from: name)
+        guard newID != tempID else { return }
+
+        // Update category id.
+        if let idx = store.categories.firstIndex(where: { $0.id == tempID }) {
+            store.categories[idx].id = newID
+        }
+
+        // Reassign any templates that referenced the temporary id.
+        for i in store.templates.indices {
+            if store.templates[i].category == tempID {
+                store.templates[i].category = newID
+            }
+        }
+
+        // Keep focus on the renamed id.
+        focusedCategoryID = newID
+    }
+
+    private func requestDelete(at offsets: IndexSet) {
+        pendingDeleteOffsets = offsets
+        showDeleteCategoryConfirm = true
+    }
+
+    private func deleteConfirmed(at offsets: IndexSet) {
+        // Prevent deleting the fallback category.
+        let protectedID: String = .general
+
+        // Build a list of indices to delete that excludes "general".
+        let deletable = offsets.filter { idx in
+            guard store.categories.indices.contains(idx) else { return false }
+            return store.categories[idx].id != protectedID
+        }
+
+        // Capture ids being deleted so we can reassign any templates that reference them.
+        let deletedIDs = deletable.map { store.categories[$0].id }
+
+        // Remove from highest index to lowest so indices remain valid.
+        for idx in deletable.sorted(by: >) {
+            store.categories.remove(at: idx)
+        }
+
+        // Ensure General exists (in case it was missing from imported/custom state).
+        if !store.categories.contains(where: { $0.id == protectedID }) {
+            store.categories.insert(CategoryItem(id: protectedID, name: "General", order: 0), at: 0)
+        }
+
+        // Normalize order.
+        for i in store.categories.indices { store.categories[i].order = i }
+
+        // Reassign templates that referenced deleted categories back to General.
+        if !deletedIDs.isEmpty {
+            for idx in store.templates.indices {
+                if deletedIDs.contains(store.templates[idx].category) {
+                    store.templates[idx].category = .general
+                }
+            }
+        }
+    }
+
+    private func move(from source: IndexSet, to destination: Int) {
+        store.categories.move(fromOffsets: source, toOffset: destination)
+        for i in store.categories.indices { store.categories[i].order = i }
+    }
+
+
+    private func makeUniqueID(from name: String) -> String {
+        let slug = name
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "[^a-z0-9]+", with: "_", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+
+        let base = slug.isEmpty ? "category" : slug
+        let existing = Set(store.categories.map { $0.id })
+        if !existing.contains(base) { return base }
+
+        var n = 2
+        while existing.contains("\(base)\(n)") {
+            n += 1
+        }
+        return "\(base)\(n)"
     }
 }
 
