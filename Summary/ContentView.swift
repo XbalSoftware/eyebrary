@@ -847,13 +847,24 @@ private struct NewPlanView: View {
         VStack(spacing: 12) {
             HStack {
                 Spacer()
+
                 Text("Conditions")
                     .font(.system(size: 20, weight: .bold))
+
                 Spacer()
+
+                Button {
+                    addOtherEntry()
+                } label: {
+                    Label("Add Other", systemImage: "plus")
+                        .labelStyle(.iconOnly)
+                        .font(.system(size: 18, weight: .semibold))
+                }
+                .buttonStyle(.plain)
             }
             .padding(.horizontal)
             .padding(.top, 8)
-            // Style filter
+
             Picker("Style", selection: $styleFilter) {
                 ForEach(TemplateStyleFilter.allCases) { f in
                     Text(f.rawValue).tag(f)
@@ -955,15 +966,7 @@ private struct NewPlanView: View {
             .padding(.horizontal)
             .padding(.top, 8)
 
-            List(selection: $selectedTemplateID) {
-                Section {
-                    Button {
-                        addOtherEntry()
-                        selectedTemplateID = nil
-                    } label: {
-                        Label("Other", systemImage: "plus.circle")
-                    }
-                }
+           List(selection: $selectedTemplateID) {
 
                 if !pinned.isEmpty {
                     Section("Pinned") {
@@ -1471,10 +1474,13 @@ private struct ManageTemplatesView: View {
     @State private var categoryFilter: CategoryFilter = .all
     @State private var styleFilter: TemplateStyleFilter = .all
     @State private var selectedID: UUID? = nil
-    @State private var isOrganizing: Bool = false
-    @State private var selectedIDs: Set<UUID> = []
     @State private var pendingDeleteTemplateID: UUID? = nil
     @State private var showDeleteTemplateConfirm: Bool = false
+    @State private var showCreateTemplateSheet: Bool = false
+    @State private var detailIsEditing: Bool = false
+    @State private var detailHasUnsavedChanges: Bool = false
+    @State private var pendingSelectionID: UUID? = nil
+    @State private var showDiscardChangesAlert: Bool = false
 
     private var filtered: [ConditionTemplate] {
         let base = store.templates.filter { matchesCategory($0, filter: categoryFilter) && matchesStyle($0, filter: styleFilter) }
@@ -1524,37 +1530,14 @@ private struct ManageTemplatesView: View {
         NavigationSplitView {
             manageSidebar
                 .navigationSplitViewColumnWidth(
-                    min: isOrganizing ? 360 : 280,
-                    ideal: isOrganizing ? 460 : 320,
-                    max: isOrganizing ? 620 : 360
+                    min: 280,
+                    ideal: 360,
+                    max: 420
                 )
         } detail: {
             manageDetail
         }
         .navigationTitle("Manage Templates")
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button {
-                    isOrganizing.toggle()
-                } label: {
-                    Text(isOrganizing ? "Done" : "Organize")
-                }
-            }
-        }
-        .safeAreaInset(edge: .top) {
-            if isOrganizing {
-                HStack {
-                    Image(systemName: "checklist")
-                    Text("Organize mode")
-                        .font(.footnote)
-                        .fontWeight(.semibold)
-                    Spacer()
-                }
-                .padding(.horizontal)
-                .padding(.vertical, 8)
-                .background(.ultraThinMaterial)
-            }
-        }
         .alert("Delete template?", isPresented: $showDeleteTemplateConfirm) {
             Button("Delete", role: .destructive) {
                 if let id = pendingDeleteTemplateID,
@@ -1570,6 +1553,25 @@ private struct ManageTemplatesView: View {
         } message: {
             Text("This will permanently delete the template.")
         }
+        .alert("Discard unsaved changes?", isPresented: $showDiscardChangesAlert) {
+            Button("Discard Changes", role: .destructive) {
+                if let pending = pendingSelectionID {
+                    selectedID = pending
+                }
+                pendingSelectionID = nil
+                detailIsEditing = false
+                detailHasUnsavedChanges = false
+            }
+            Button("Cancel", role: .cancel) {
+                pendingSelectionID = nil
+            }
+        } message: {
+            Text("Any unsaved changes will be lost if you leave this template without saving.")
+        }
+        .sheet(isPresented: $showCreateTemplateSheet) {
+            TemplateEditorSheet(mode: .create)
+                .environmentObject(store)
+        }
     }
 
     private var manageSidebar: some View {
@@ -1580,23 +1582,11 @@ private struct ManageTemplatesView: View {
             manageSearch
             manageTemplatesList
         }
-        .safeAreaInset(edge: .bottom) {
-            if isOrganizing {
-                manageBulkBar
-                    .background(.ultraThinMaterial)
-            }
-        }
-        .onChange(of: isOrganizing) { _, newValue in
-            if !newValue {
-                selectedIDs.removeAll()
-            }
-        }
+        .padding(.bottom, 8)
     }
 
     private var manageHeader: some View {
         HStack(spacing: 12) {
-            // EditButton removed per new Organize/Done UI
-
             Spacer()
 
             Text("Templates")
@@ -1605,7 +1595,7 @@ private struct ManageTemplatesView: View {
             Spacer()
 
             Button {
-                createNewTemplate()
+                showCreateTemplateSheet = true
             } label: {
                 Label("New Template", systemImage: "plus")
                     .labelStyle(.iconOnly)
@@ -1736,6 +1726,14 @@ private struct ManageTemplatesView: View {
             } else {
                 ForEach(filtered) { t in
                     manageTemplateRow(t)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) {
+                                pendingDeleteTemplateID = t.id
+                                showDeleteTemplateConfirm = true
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
                 }
                 .onMove(perform: handleMove)
             }
@@ -1745,12 +1743,6 @@ private struct ManageTemplatesView: View {
     @ViewBuilder
     private func manageTemplateRow(_ t: ConditionTemplate) -> some View {
         HStack(spacing: 10) {
-            if isOrganizing {
-                Image(systemName: selectedIDs.contains(t.id) ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(selectedIDs.contains(t.id) ? Color.accentColor : Color.secondary)
-                    .frame(width: 22)
-            }
-
             Image(systemName: t.defaultStyle == .clinical ? "stethoscope" : "info.circle")
                 .foregroundStyle(.secondary)
                 .frame(width: 22)
@@ -1764,37 +1756,18 @@ private struct ManageTemplatesView: View {
         }
         .contentShape(Rectangle())
         .onTapGesture {
-            if isOrganizing {
-                if selectedIDs.contains(t.id) {
-                    selectedIDs.remove(t.id)
-                } else {
-                    selectedIDs.insert(t.id)
-                }
+            guard selectedID != t.id else { return }
+
+            if detailIsEditing && detailHasUnsavedChanges {
+                pendingSelectionID = t.id
+                showDiscardChangesAlert = true
             } else {
                 selectedID = t.id
-            }
-        }
-        .contextMenu {
-            Menu("Change Category") {
-                Button("General") {
-                    changeCategory(for: [t.id], to: .general)
-                }
-
-                Divider()
-
-                ForEach(orderedCategories) { item in
-                    let cat: TemplateCategory = item.id.isEmpty ? .general : item.id
-                    Button(item.name) {
-                        changeCategory(for: [t.id], to: cat)
-                    }
-                }
             }
         }
     }
 
     private func handleMove(from source: IndexSet, to destination: Int) {
-        guard !isOrganizing else { return }
-
         // Only allow reordering when not searching.
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard q.isEmpty else { return }
@@ -1804,46 +1777,17 @@ private struct ManageTemplatesView: View {
         store.applyReorder(orderedIDs: ids)
     }
 
-    private var manageBulkBar: some View {
-        Group {
-            if isOrganizing && !selectedIDs.isEmpty {
-                HStack {
-                    Text("Selected: \(selectedIDs.count)")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
 
-                    Spacer()
-
-                    Menu {
-                        Button("General") {
-                            changeCategory(for: Array(selectedIDs), to: .general)
-                            selectedIDs.removeAll()
-                        }
-
-                        Divider()
-
-                        ForEach(orderedCategories) { item in
-                            let cat: TemplateCategory = item.id.isEmpty ? .general : item.id
-                            Button(item.name) {
-                                changeCategory(for: Array(selectedIDs), to: cat)
-                                selectedIDs.removeAll()
-                            }
-                        }
-                    } label: {
-                        Label("Change Category…", systemImage: "tag")
-                    }
-                    .buttonStyle(.bordered)
-                }
-                .padding(.horizontal)
-                .padding(.vertical, 10)
-            }
-        }
-    }
 
     private var manageDetail: some View {
         Group {
             if let t = selectedTemplate {
-                ManageTemplateDetail(selectedID: $selectedID, template: t)
+                ManageTemplateDetail(
+                    selectedID: $selectedID,
+                    isEditingExternal: $detailIsEditing,
+                    hasUnsavedChangesExternal: $detailHasUnsavedChanges,
+                    template: t
+                )
             } else {
                 ContentUnavailableView(
                     "Select a template",
@@ -1854,27 +1798,7 @@ private struct ManageTemplatesView: View {
         }
     }
 
-    private func createNewTemplate() {
-        let new = ConditionTemplate(
-            title: "New Condition",
-            assessment: "",
-            plan: "",
-            category: {
-                switch categoryFilter {
-                case .all: return .general
-                case .category(let id): return id
-                }
-            }(),
-            defaultStyle: .clinical,
-            isPinned: false,
-            isVisible: true,
-            order: store.nextOrderValue(),
-            createdAt: Date(),
-            updatedAt: Date()
-        )
-        store.addTemplate(new)
-        selectedID = new.id
-    }
+    // removed createNewTemplate()
 
     private func changeCategory(for ids: [UUID], to newCategory: TemplateCategory) {
         for id in ids {
@@ -1888,6 +1812,8 @@ private struct ManageTemplatesView: View {
 private struct ManageTemplateDetail: View {
     @EnvironmentObject private var store: AppStore
     @Binding var selectedID: UUID?
+    @Binding var isEditingExternal: Bool
+    @Binding var hasUnsavedChangesExternal: Bool
     @State private var showDeleteConfirm: Bool = false
 
     let template: ConditionTemplate
@@ -1954,6 +1880,12 @@ private struct ManageTemplateDetail: View {
         }
     }
 
+    private var hasUnsavedChanges: Bool {
+        title != originalTitle
+            || assessment != originalAssessment
+            || plan != originalPlan
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 12) {
@@ -1968,18 +1900,24 @@ private struct ManageTemplateDetail: View {
                     Button("Done") {
                         commitEdits()
                         isEditing = false
+                        isEditingExternal = false
+                        hasUnsavedChangesExternal = false
                     }
                     .buttonStyle(.bordered)
 
                     Button("Cancel") {
                         discardEdits()
                         isEditing = false
+                        isEditingExternal = false
+                        hasUnsavedChangesExternal = false
                     }
                     .buttonStyle(.bordered)
                 } else {
                     Button("Edit") {
                         beginEditing()
                         isEditing = true
+                        isEditingExternal = true
+                        hasUnsavedChangesExternal = false
                     }
                     .buttonStyle(.bordered)
                 }
@@ -1998,7 +1936,6 @@ private struct ManageTemplateDetail: View {
                         Text(item.name).tag(item.id.isEmpty ? .general : item.id)
                     }
                 }
-                .disabled(!isEditing)
                 .pickerStyle(.menu)
             }
             .padding(.horizontal)
@@ -2012,7 +1949,6 @@ private struct ManageTemplateDetail: View {
 
                 Toggle("", isOn: $isVisible)
                     .labelsHidden()
-                    .disabled(!isEditing)
             }
             .padding(.horizontal)
 
@@ -2025,7 +1961,6 @@ private struct ManageTemplateDetail: View {
 
                 Toggle("", isOn: $isPinned)
                     .labelsHidden()
-                    .disabled(!isEditing)
             }
             .padding(.horizontal)
 
@@ -2055,7 +1990,6 @@ private struct ManageTemplateDetail: View {
                         )
                 }
                 .buttonStyle(.plain)
-                .disabled(!isEditing)
                 .accessibilityLabel("Default format")
                 .onChange(of: defaultStyle) { oldValue, newValue in
                     applyAboutTitleIfNeeded(old: oldValue, new: newValue)
@@ -2122,14 +2056,76 @@ private struct ManageTemplateDetail: View {
         .onAppear {
             loadIfNeeded()
             isEditing = false
+            isEditingExternal = false
+            hasUnsavedChangesExternal = false
         }
         .onChange(of: template.id) { _, _ in
             didLoad = false
             isEditing = false
+            isEditingExternal = false
+            hasUnsavedChangesExternal = false
             loadIfNeeded()
         }
+        .onChange(of: isEditing) { _, newValue in
+            isEditingExternal = newValue
+            if !newValue {
+                hasUnsavedChangesExternal = false
+            } else {
+                hasUnsavedChangesExternal = hasUnsavedChanges
+            }
+        }
+        .onChange(of: title) { _, _ in
+            if isEditing {
+                hasUnsavedChangesExternal = hasUnsavedChanges
+            }
+        }
+        .onChange(of: assessment) { _, _ in
+            if isEditing {
+                hasUnsavedChangesExternal = hasUnsavedChanges
+            }
+        }
+        .onChange(of: plan) { _, _ in
+            if isEditing {
+                hasUnsavedChangesExternal = hasUnsavedChanges
+            }
+        }
+        .onChange(of: category) { _, _ in
+            saveMetadataChangesIfNeeded()
+        }
+        .onChange(of: isPinned) { _, _ in
+            saveMetadataChangesIfNeeded()
+        }
+        .onChange(of: isVisible) { _, _ in
+            saveMetadataChangesIfNeeded()
+        }
+        .onChange(of: defaultStyle) { _, _ in
+            saveMetadataChangesIfNeeded()
+        }
     }
+    private func saveMetadataChangesIfNeeded() {
+        guard didLoad else { return }
+        guard !isEditing else { return }
+        guard var t = store.template(id: template.id) else { return }
 
+        let metadataChanged = t.category != category
+            || t.isPinned != isPinned
+            || t.isVisible != isVisible
+            || t.defaultStyle != defaultStyle
+
+        guard metadataChanged else { return }
+
+        t.category = category
+        t.isPinned = isPinned
+        t.isVisible = isVisible
+        t.defaultStyle = defaultStyle
+        t.updatedAt = Date()
+        store.updateTemplate(t)
+
+        originalCategory = t.category
+        originalIsPinned = t.isPinned
+        originalIsVisible = t.isVisible
+        originalDefaultStyle = t.defaultStyle
+    }
     private func loadIfNeeded() {
         guard !didLoad else { return }
         didLoad = true
@@ -2180,6 +2176,8 @@ private struct ManageTemplateDetail: View {
         category = originalCategory
         isPinned = originalIsPinned
         isVisible = originalIsVisible
+        isEditingExternal = false
+        hasUnsavedChangesExternal = false
     }
 
     private func commitEdits() {
@@ -2205,6 +2203,8 @@ private struct ManageTemplateDetail: View {
         originalCategory = t.category
         originalIsPinned = t.isPinned
         originalIsVisible = t.isVisible
+        isEditingExternal = false
+        hasUnsavedChangesExternal = false
     }
 }
 
@@ -2226,6 +2226,7 @@ private struct TemplateEditorSheet: View {
     @State private var category: TemplateCategory = .general
     @State private var isPinned: Bool = false
     @State private var isVisible: Bool = true
+    @State private var defaultStyle: PlanEntryStyle = .clinical
 
     @State private var loadedID: UUID? = nil
 
@@ -2236,7 +2237,6 @@ private struct TemplateEditorSheet: View {
                     TextField("Condition name", text: $title)
                         .textInputAutocapitalization(.sentences)
                 }
-
 
                 Section("Category") {
                     Picker("", selection: $category) {
@@ -2253,12 +2253,20 @@ private struct TemplateEditorSheet: View {
                     Toggle("Pin to top", isOn: $isPinned)
                 }
 
-                Section("Assessment") {
+                Section("Default Format") {
+                    Picker("Format", selection: $defaultStyle) {
+                        Text("Clinical").tag(PlanEntryStyle.clinical)
+                        Text("Education").tag(PlanEntryStyle.education)
+                    }
+                    .pickerStyle(.segmented)
+                }
+
+                Section(defaultStyle == .clinical ? "Assessment" : "Overview") {
                     TextEditor(text: $assessment)
                         .frame(minHeight: 120)
                 }
 
-                Section("Plan") {
+                Section(defaultStyle == .clinical ? "Plan" : "Treatment Options") {
                     TextEditor(text: $plan)
                         .frame(minHeight: 160)
                 }
@@ -2296,6 +2304,7 @@ private struct TemplateEditorSheet: View {
                 self.category = .general
                 self.isPinned = false
                 self.isVisible = true
+                self.defaultStyle = .clinical
                 self.title = ""
                 self.assessment = ""
                 self.plan = ""
@@ -2310,6 +2319,7 @@ private struct TemplateEditorSheet: View {
             category = t.category
             isPinned = t.isPinned
             isVisible = t.isVisible
+            defaultStyle = t.defaultStyle
         }
     }
 
@@ -2325,7 +2335,7 @@ private struct TemplateEditorSheet: View {
                 assessment: tAssess,
                 plan: tPlan,
                 category: category,
-                defaultStyle: .clinical,
+                defaultStyle: defaultStyle,
                 isPinned: isPinned,
                 isVisible: isVisible,
                 order: store.nextOrderValue(),
@@ -2342,6 +2352,7 @@ private struct TemplateEditorSheet: View {
             existing.category = category
             existing.isPinned = isPinned
             existing.isVisible = isVisible
+            existing.defaultStyle = defaultStyle
             existing.updatedAt = Date()
             store.updateTemplate(existing)
         }
@@ -3187,3 +3198,4 @@ private struct ActivityView: UIViewControllerRepresentable {
 #Preview {
     ContentView()
 }
+
