@@ -389,6 +389,24 @@ final class AppStore: ObservableObject {
         templates.first(where: { $0.id == id })
     }
 
+    // MARK: Category normalization
+
+    private func normalizedCategoryID(_ raw: TemplateCategory) -> TemplateCategory {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return .general }
+
+        let validIDs = Set(categories.map { $0.id.isEmpty ? TemplateCategory.general : $0.id })
+        return validIDs.contains(trimmed) ? trimmed : .general
+    }
+
+    private func normalizeImportedTemplates(_ templates: [ConditionTemplate]) -> [ConditionTemplate] {
+        templates.map { t in
+            var copy = t
+            copy.category = normalizedCategoryID(copy.category)
+            return copy
+        }
+    }
+
     // MARK: Import/Export Templates
 
     func exportTemplatesJSON() throws -> Data {
@@ -396,7 +414,9 @@ final class AppStore: ObservableObject {
     }
 
     func importTemplatesJSON(_ data: Data, merge: Bool) throws {
-        let incoming = try JSONDecoder.standard.decode([ConditionTemplate].self, from: data)
+        let decoded = try JSONDecoder.standard.decode([ConditionTemplate].self, from: data)
+        let incoming = normalizeImportedTemplates(decoded)
+
         if merge {
             var map = Dictionary(uniqueKeysWithValues: templates.map { ($0.id, $0) })
             for t in incoming { map[t.id] = t }
@@ -699,7 +719,8 @@ private struct NewPlanView: View {
     @EnvironmentObject private var store: AppStore
 
     @State private var selectedTemplateID: UUID? = nil
-    @State private var category: TemplateCategory = .general
+    @State private var categoryFilter: CategoryFilter = .all
+    @State private var styleFilter: TemplateStyleFilter = .all
 
     // Sidebar search (New Plan)
     @State private var query: String = ""
@@ -724,8 +745,7 @@ private struct NewPlanView: View {
     private var pinned: [ConditionTemplate] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let base = store.templates
-            .filter { $0.isPinned && $0.isVisible && (category == .general || $0.category == category) }
-
+            .filter { $0.isPinned && $0.isVisible && matchesCategory($0, filter: categoryFilter) && matchesStyle($0, filter: styleFilter) }
         let filtered = q.isEmpty ? base : base.filter {
             $0.title.localizedCaseInsensitiveContains(q) ||
             $0.assessment.localizedCaseInsensitiveContains(q) ||
@@ -743,8 +763,7 @@ private struct NewPlanView: View {
     private var others: [ConditionTemplate] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let base = store.templates
-            .filter { !$0.isPinned && $0.isVisible && (category == .general || $0.category == category) }
-
+            .filter { !$0.isPinned && $0.isVisible && matchesCategory($0, filter: categoryFilter) && matchesStyle($0, filter: styleFilter) }
         let filtered = q.isEmpty ? base : base.filter {
             $0.title.localizedCaseInsensitiveContains(q) ||
             $0.assessment.localizedCaseInsensitiveContains(q) ||
@@ -758,7 +777,13 @@ private struct NewPlanView: View {
             return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
         }
     }
+    private var orderedCategories: [CategoryItem] {
+        store.categories.sorted { $0.order < $1.order }
+    }
 
+    private var nonGeneralCategories: [CategoryItem] {
+        orderedCategories.filter { ($0.id.isEmpty ? TemplateCategory.general : $0.id) != .general }
+    }
     var body: some View {
         NavigationSplitView {
             sidebar
@@ -826,51 +851,81 @@ private struct NewPlanView: View {
                     .font(.system(size: 20, weight: .bold))
                 Spacer()
             }
-            .overlay(alignment: .trailing) {
-                // This uses the system split view toggle already provided by NavigationSplitView
-                // so it remains functional.
-                EmptyView()
-            }
             .padding(.horizontal)
             .padding(.top, 8)
-            // Place the built-in split view sidebar toggle button at the top-right
-            // (this will appear in the navigation bar area for the sidebar column)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        // no-op; actual toggle is provided by the system
-                    } label: {
-                        EmptyView()
-                    }
+            // Style filter
+            Picker("Style", selection: $styleFilter) {
+                ForEach(TemplateStyleFilter.allCases) { f in
+                    Text(f.rawValue).tag(f)
                 }
             }
+            .pickerStyle(.segmented)
+            .padding(.horizontal)
+            // Category selector
+            HStack(spacing: 10) {
+                if categoryFilter != .all {
+                    Button {
+                        categoryFilter = .all
+                    } label: {
+                        Text("All")
+                            .font(.footnote)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color.secondary.opacity(0.12))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("All Categories")
+                }
 
-            // Category chips
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    let cats = store.categories.sorted { $0.order < $1.order }
-                    ForEach(cats) { item in
+                Menu {
+                    Button {
+                        categoryFilter = .all
+                    } label: {
+                        if categoryFilter == .all {
+                            Label("All Categories", systemImage: "checkmark")
+                        } else {
+                            Text("All Categories")
+                        }
+                    }
+
+                    Divider()
+
+                    ForEach(orderedCategories) { item in
                         let cat: TemplateCategory = item.id.isEmpty ? .general : item.id
                         Button {
-                            category = cat
+                            categoryFilter = .category(cat)
                         } label: {
-                            Text(item.name)
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(category == cat ? Color.primary : Color.secondary)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .background(
-                                    Capsule()
-                                        .fill(category == cat ? Color.secondary.opacity(0.22) : Color.secondary.opacity(0.10))
-                                )
+                            if categoryFilter == .category(cat) {
+                                Label(item.name, systemImage: "checkmark")
+                            } else {
+                                Text(item.name)
+                            }
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Category \(item.name)")
                     }
+                } label: {
+                    HStack(spacing: 6) {
+                        Text("Category:")
+                            .foregroundStyle(.secondary)
+                        Text(categoryFilter.displayName(using: store))
+                            .lineLimit(1)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(.footnote)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.secondary.opacity(0.12))
+                    )
                 }
-                .padding(.horizontal)
-                .padding(.top, 2)
+                .buttonStyle(.plain)
             }
+            .padding(.horizontal)
 
             // Search (placed under Basic/Advanced)
             HStack(spacing: 8) {
@@ -916,11 +971,17 @@ private struct NewPlanView: View {
                             Button {
                                 toggleTemplateSelection(t)
                             } label: {
-                                HStack {
+                                HStack(spacing: 10) {
+                                    Image(systemName: t.defaultStyle == .clinical ? "stethoscope" : "info.circle")
+                                        .foregroundStyle(.secondary)
+
                                     Text(t.title)
                                         .font(.subheadline)
                                         .multilineTextAlignment(.leading)
+                                        .layoutPriority(1)
+
                                     Spacer()
+
                                     if isTemplateSelected(t.id) {
                                         Image(systemName: "checkmark.circle.fill")
                                             .foregroundStyle(.tint)
@@ -936,14 +997,20 @@ private struct NewPlanView: View {
                         Button {
                             toggleTemplateSelection(t)
                         } label: {
-                            HStack {
+                            HStack(spacing: 10) {
+                                Image(systemName: t.defaultStyle == .clinical ? "stethoscope" : "info.circle")
+                                    .foregroundStyle(.secondary)
+
                                 Text(t.title)
                                     .font(.subheadline)
                                     .multilineTextAlignment(.leading)
+                                    .layoutPriority(1)
+
                                 Spacer()
+
                                 if isTemplateSelected(t.id) {
                                     Image(systemName: "checkmark.circle.fill")
-                                        .foregroundStyle(.tint)
+                                        .foregroundStyle(Color.accentColor)
                                 }
                             }
                         }
@@ -1347,20 +1414,70 @@ private struct HistorySheet: View {
     }
 }
 
+
+// MARK: - Filtering Helpers
+
+private enum CategoryFilter: Equatable {
+    case all
+    case category(TemplateCategory)
+
+    func displayName(using store: AppStore) -> String {
+        switch self {
+        case .all:
+            return "All Categories"
+        case .category(let id):
+            if id == .general { return "General" }
+            if let item = store.categories.first(where: { ($0.id.isEmpty ? TemplateCategory.general : $0.id) == id }) {
+                return item.name
+            }
+            // Fallback if missing
+            return "General"
+        }
+    }
+}
+
+private func matchesCategory(_ t: ConditionTemplate, filter: CategoryFilter) -> Bool {
+    switch filter {
+    case .all:
+        return true
+    case .category(let id):
+        return t.category == id
+    }
+}
+private enum TemplateStyleFilter: String, CaseIterable, Identifiable {
+    case all = "All"
+    case clinical = "Clinical"
+    case education = "Education"
+
+    var id: String { rawValue }
+}
+
+private func matchesStyle(_ t: ConditionTemplate, filter: TemplateStyleFilter) -> Bool {
+    switch filter {
+    case .all:
+        return true
+    case .clinical:
+        return t.defaultStyle == .clinical
+    case .education:
+        return t.defaultStyle == .education
+    }
+}
 // MARK: - Manage Templates
 
 private struct ManageTemplatesView: View {
     @EnvironmentObject private var store: AppStore
 
     @State private var query: String = ""
-    @State private var category: TemplateCategory = .general
+    @State private var categoryFilter: CategoryFilter = .all
+    @State private var styleFilter: TemplateStyleFilter = .all
     @State private var selectedID: UUID? = nil
-    @State private var editMode: EditMode = .inactive
+    @State private var isOrganizing: Bool = false
+    @State private var selectedIDs: Set<UUID> = []
     @State private var pendingDeleteTemplateID: UUID? = nil
     @State private var showDeleteTemplateConfirm: Bool = false
 
     private var filtered: [ConditionTemplate] {
-        let base = store.templates.filter { (category == .general || $0.category == category) }
+        let base = store.templates.filter { matchesCategory($0, filter: categoryFilter) && matchesStyle($0, filter: styleFilter) }
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
 
         let list: [ConditionTemplate]
@@ -1395,13 +1512,49 @@ private struct ManageTemplatesView: View {
         return store.template(id: id)
     }
 
+    private var orderedCategories: [CategoryItem] {
+        store.categories.sorted { $0.order < $1.order }
+    }
+
+    private var nonGeneralCategories: [CategoryItem] {
+        orderedCategories.filter { ( $0.id.isEmpty ? TemplateCategory.general : $0.id ) != .general }
+    }
+
     var body: some View {
         NavigationSplitView {
             manageSidebar
+                .navigationSplitViewColumnWidth(
+                    min: isOrganizing ? 360 : 280,
+                    ideal: isOrganizing ? 460 : 320,
+                    max: isOrganizing ? 620 : 360
+                )
         } detail: {
             manageDetail
         }
         .navigationTitle("Manage Templates")
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    isOrganizing.toggle()
+                } label: {
+                    Text(isOrganizing ? "Done" : "Organize")
+                }
+            }
+        }
+        .safeAreaInset(edge: .top) {
+            if isOrganizing {
+                HStack {
+                    Image(systemName: "checklist")
+                    Text("Organize mode")
+                        .font(.footnote)
+                        .fontWeight(.semibold)
+                    Spacer()
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+                .background(.ultraThinMaterial)
+            }
+        }
         .alert("Delete template?", isPresented: $showDeleteTemplateConfirm) {
             Button("Delete", role: .destructive) {
                 if let id = pendingDeleteTemplateID,
@@ -1421,149 +1574,270 @@ private struct ManageTemplatesView: View {
 
     private var manageSidebar: some View {
         VStack(spacing: 12) {
-            HStack(spacing: 12) {
-                EditButton()
-                    .font(.system(size: 16, weight: .semibold))
+            manageHeader
+            manageStyleFilter
+            manageCategoryChips
+            manageSearch
+            manageTemplatesList
+        }
+        .safeAreaInset(edge: .bottom) {
+            if isOrganizing {
+                manageBulkBar
+                    .background(.ultraThinMaterial)
+            }
+        }
+        .onChange(of: isOrganizing) { _, newValue in
+            if !newValue {
+                selectedIDs.removeAll()
+            }
+        }
+    }
 
-                Spacer()
+    private var manageHeader: some View {
+        HStack(spacing: 12) {
+            // EditButton removed per new Organize/Done UI
 
-                Text("Templates")
-                    .font(.system(size: 20, weight: .bold))
+            Spacer()
 
-                Spacer()
+            Text("Templates")
+                .font(.system(size: 20, weight: .bold))
 
+            Spacer()
+
+            Button {
+                createNewTemplate()
+            } label: {
+                Label("New Template", systemImage: "plus")
+                    .labelStyle(.iconOnly)
+                    .font(.system(size: 18, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal)
+        .padding(.top, 8)
+    }
+
+    private var manageStyleFilter: some View {
+        Picker("Style", selection: $styleFilter) {
+            ForEach(TemplateStyleFilter.allCases) { f in
+                Text(f.rawValue).tag(f)
+            }
+        }
+        .pickerStyle(.segmented)
+        .padding(.horizontal)
+    }
+
+    private var manageCategoryChips: some View {
+        HStack(spacing: 10) {
+            if categoryFilter != .all {
                 Button {
-                    createNewTemplate()
+                    categoryFilter = .all
                 } label: {
-                    Label("New Template", systemImage: "plus")
-                        .labelStyle(.iconOnly)
-                        .font(.system(size: 18, weight: .semibold))
+                    Text("All")
+                        .font(.footnote)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color.secondary.opacity(0.12))
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("All Categories")
+            }
+
+            Menu {
+                Button {
+                    categoryFilter = .all
+                } label: {
+                    if categoryFilter == .all {
+                        Label("All Categories", systemImage: "checkmark")
+                    } else {
+                        Text("All Categories")
+                    }
+                }
+
+                Divider()
+
+                ForEach(orderedCategories) { item in
+                    let cat: TemplateCategory = item.id.isEmpty ? .general : item.id
+                    Button {
+                        categoryFilter = .category(cat)
+                    } label: {
+                        if categoryFilter == .category(cat) {
+                            Label(item.name, systemImage: "checkmark")
+                        } else {
+                            Text(item.name)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Text("Category:")
+                        .foregroundStyle(.secondary)
+                    Text(categoryFilter.displayName(using: store))
+                        .lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .font(.footnote)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.secondary.opacity(0.12))
+                )
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal)
+        .padding(.top, 2)
+    }
+
+    private var manageSearch: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+
+            TextField("Search", text: $query)
+                .textFieldStyle(.plain)
+                .autocorrectionDisabled(true)
+
+            if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Button {
+                    query = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
             }
-            .padding(.horizontal)
-            .padding(.top, 8)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.secondary.opacity(0.15))
+        )
+        .padding(.horizontal)
+        .padding(.top, 8)
+    }
 
-
-            // Category chips
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    let cats = store.categories.sorted { $0.order < $1.order }
-                    ForEach(cats) { item in
-                        let cat: TemplateCategory = item.id.isEmpty ? .general : item.id
-                        Button {
-                            category = cat
-                        } label: {
-                            Text(item.name)
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(category == cat ? Color.primary : Color.secondary)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .background(
-                                    Capsule()
-                                        .fill(category == cat ? Color.secondary.opacity(0.22) : Color.secondary.opacity(0.10))
-                                )
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Category \(item.name)")
-                    }
+    private var manageTemplatesList: some View {
+        List(selection: $selectedID) {
+            if filtered.isEmpty {
+                ContentUnavailableView(
+                    "No templates",
+                    systemImage: "doc.text",
+                    description: Text("Tap + to add a template.")
+                )
+                .listRowBackground(Color.clear)
+            } else {
+                ForEach(filtered) { t in
+                    manageTemplateRow(t)
                 }
-                .padding(.horizontal)
-                .padding(.top, 2)
+                .onMove(perform: handleMove)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func manageTemplateRow(_ t: ConditionTemplate) -> some View {
+        HStack(spacing: 10) {
+            if isOrganizing {
+                Image(systemName: selectedIDs.contains(t.id) ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(selectedIDs.contains(t.id) ? Color.accentColor : Color.secondary)
+                    .frame(width: 22)
             }
 
-            // Search (placed under Basic/Advanced)
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
+            Image(systemName: t.defaultStyle == .clinical ? "stethoscope" : "info.circle")
+                .foregroundStyle(.secondary)
+                .frame(width: 22)
 
-                TextField("Search", text: $query)
-                    .textFieldStyle(.plain)
-                    .autocorrectionDisabled(true)
+            Text(t.title)
+                .font(.subheadline)
+                .lineLimit(2)
+                .layoutPriority(1)
 
-                if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Button {
-                        query = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(Color.secondary.opacity(0.15))
-            )
-            .padding(.horizontal)
-            .padding(.top, 8)
-
-            List(selection: $selectedID) {
-                if filtered.isEmpty {
-                    ContentUnavailableView(
-                        "No templates",
-                        systemImage: "doc.text",
-                        description: Text("Tap + to add a template.")
-                    )
-                    .listRowBackground(Color.clear)
+            Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if isOrganizing {
+                if selectedIDs.contains(t.id) {
+                    selectedIDs.remove(t.id)
                 } else {
-                    ForEach(filtered) { t in
-                        HStack(spacing: 10) {
-                            if editMode == .active {
-                                Button {
-                                    store.toggleVisible(id: t.id)
-                                } label: {
-                                    Image(systemName: t.isVisible ? "eye" : "eye.slash")
-                                        .foregroundStyle(t.isVisible ? Color.secondary : Color.secondary.opacity(0.6))
-                                }
-                                .buttonStyle(.plain)
+                    selectedIDs.insert(t.id)
+                }
+            } else {
+                selectedID = t.id
+            }
+        }
+        .contextMenu {
+            Menu("Change Category") {
+                Button("General") {
+                    changeCategory(for: [t.id], to: .general)
+                }
 
-                                Button {
-                                    store.togglePinned(id: t.id)
-                                } label: {
-                                    Image(systemName: t.isPinned ? "pin.fill" : "pin")
-                                        .foregroundStyle(t.isPinned ? .yellow : .secondary)
-                                }
-                                .buttonStyle(.plain)
-                            }
+                Divider()
 
-                            Text(t.title)
-                                .font(.subheadline)
-                                .lineLimit(2)
-
-                            Spacer()
-
-                            if editMode == .active {
-                                Button {
-                                    pendingDeleteTemplateID = t.id
-                                    showDeleteTemplateConfirm = true
-                                } label: {
-                                    Image(systemName: "minus.circle.fill")
-                                        .foregroundStyle(.red)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        .contentShape(Rectangle())
-                        .onTapGesture { selectedID = t.id }
-                    }
-                    .onMove { from, to in
-                        guard editMode == .active else { return }
-
-                        // Only allow reordering when not searching.
-                        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-                        guard q.isEmpty else { return }
-
-                    var ids = filtered.map { $0.id }
-                    ids.move(fromOffsets: from, toOffset: to)
-                    store.applyReorder(orderedIDs: ids)
+                ForEach(orderedCategories) { item in
+                    let cat: TemplateCategory = item.id.isEmpty ? .general : item.id
+                    Button(item.name) {
+                        changeCategory(for: [t.id], to: cat)
                     }
                 }
             }
         }
-        .environment(\.editMode, $editMode)
+    }
+
+    private func handleMove(from source: IndexSet, to destination: Int) {
+        guard !isOrganizing else { return }
+
+        // Only allow reordering when not searching.
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard q.isEmpty else { return }
+
+        var ids = filtered.map { $0.id }
+        ids.move(fromOffsets: source, toOffset: destination)
+        store.applyReorder(orderedIDs: ids)
+    }
+
+    private var manageBulkBar: some View {
+        Group {
+            if isOrganizing && !selectedIDs.isEmpty {
+                HStack {
+                    Text("Selected: \(selectedIDs.count)")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+
+                    Spacer()
+
+                    Menu {
+                        Button("General") {
+                            changeCategory(for: Array(selectedIDs), to: .general)
+                            selectedIDs.removeAll()
+                        }
+
+                        Divider()
+
+                        ForEach(orderedCategories) { item in
+                            let cat: TemplateCategory = item.id.isEmpty ? .general : item.id
+                            Button(item.name) {
+                                changeCategory(for: Array(selectedIDs), to: cat)
+                                selectedIDs.removeAll()
+                            }
+                        }
+                    } label: {
+                        Label("Change Category…", systemImage: "tag")
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 10)
+            }
+        }
     }
 
     private var manageDetail: some View {
@@ -1585,7 +1859,12 @@ private struct ManageTemplatesView: View {
             title: "New Condition",
             assessment: "",
             plan: "",
-            category: category,
+            category: {
+                switch categoryFilter {
+                case .all: return .general
+                case .category(let id): return id
+                }
+            }(),
             defaultStyle: .clinical,
             isPinned: false,
             isVisible: true,
@@ -1595,6 +1874,15 @@ private struct ManageTemplatesView: View {
         )
         store.addTemplate(new)
         selectedID = new.id
+    }
+
+    private func changeCategory(for ids: [UUID], to newCategory: TemplateCategory) {
+        for id in ids {
+            guard var t = store.template(id: id) else { continue }
+            t.category = newCategory
+            t.updatedAt = Date()
+            store.updateTemplate(t)
+        }
     }
 }
 private struct ManageTemplateDetail: View {
@@ -1608,6 +1896,8 @@ private struct ManageTemplateDetail: View {
     @State private var assessment: String = ""
     @State private var plan: String = ""
     @State private var category: TemplateCategory = .general
+    @State private var isPinned: Bool = false
+    @State private var isVisible: Bool = true
 
     @State private var didLoad = false
 
@@ -1617,6 +1907,8 @@ private struct ManageTemplateDetail: View {
     @State private var originalAssessment: String = ""
     @State private var originalPlan: String = ""
     @State private var originalCategory: TemplateCategory = .general
+    @State private var originalIsPinned: Bool = false
+    @State private var originalIsVisible: Bool = true
     @State private var defaultStyle: PlanEntryStyle = .clinical
     @State private var originalDefaultStyle: PlanEntryStyle = .clinical
 
@@ -1710,6 +2002,33 @@ private struct ManageTemplateDetail: View {
                 .pickerStyle(.menu)
             }
             .padding(.horizontal)
+
+            HStack {
+                Text("Visible in New Plan")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Toggle("", isOn: $isVisible)
+                    .labelsHidden()
+                    .disabled(!isEditing)
+            }
+            .padding(.horizontal)
+
+            HStack {
+                Text("Pinned")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Toggle("", isOn: $isPinned)
+                    .labelsHidden()
+                    .disabled(!isEditing)
+            }
+            .padding(.horizontal)
+
             HStack {
                 Text("Default Format")
                     .font(.subheadline)
@@ -1820,6 +2139,10 @@ private struct ManageTemplateDetail: View {
         plan = template.plan
         category = template.category
         originalCategory = template.category
+        isPinned = template.isPinned
+        isVisible = template.isVisible
+        originalIsPinned = template.isPinned
+        originalIsVisible = template.isVisible
         defaultStyle = template.defaultStyle
         originalDefaultStyle = template.defaultStyle
 
@@ -1836,6 +2159,8 @@ private struct ManageTemplateDetail: View {
         originalAssessment = t.assessment
         originalPlan = t.plan
         originalCategory = t.category
+        originalIsPinned = t.isPinned
+        originalIsVisible = t.isVisible
         defaultStyle = t.defaultStyle
         originalDefaultStyle = t.defaultStyle
 
@@ -1843,6 +2168,8 @@ private struct ManageTemplateDetail: View {
         assessment = t.assessment
         plan = t.plan
         category = t.category
+        isPinned = t.isPinned
+        isVisible = t.isVisible
     }
 
     private func discardEdits() {
@@ -1851,6 +2178,8 @@ private struct ManageTemplateDetail: View {
         plan = originalPlan
         defaultStyle = originalDefaultStyle
         category = originalCategory
+        isPinned = originalIsPinned
+        isVisible = originalIsVisible
     }
 
     private func commitEdits() {
@@ -1862,7 +2191,8 @@ private struct ManageTemplateDetail: View {
         t.plan = plan
         t.defaultStyle = defaultStyle
         t.category = category
-
+        t.isPinned = isPinned
+        t.isVisible = isVisible
 
         t.updatedAt = Date()
         store.updateTemplate(t)
@@ -1873,6 +2203,8 @@ private struct ManageTemplateDetail: View {
         originalPlan = t.plan
         originalDefaultStyle = t.defaultStyle
         originalCategory = t.category
+        originalIsPinned = t.isPinned
+        originalIsVisible = t.isVisible
     }
 }
 
