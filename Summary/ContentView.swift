@@ -41,7 +41,7 @@ struct ConditionTemplate: Identifiable, Codable, Equatable {
     var plan: String
 
     var category: TemplateCategory = .general
-    var defaultStyle: PlanEntryStyle = .clinical
+    var defaultStyle: PlanEntryStyle = .diagnosis
     var isPinned: Bool
     /// If false, the template is hidden from the New Plan picker but remains available in Manage.
     var isVisible: Bool = true
@@ -61,7 +61,7 @@ struct ConditionTemplate: Identifiable, Codable, Equatable {
         assessment: String,
         plan: String,
         category: TemplateCategory = .general,
-        defaultStyle: PlanEntryStyle = .clinical,
+        defaultStyle: PlanEntryStyle = .diagnosis,
         isPinned: Bool,
         isVisible: Bool = true,
         order: Int? = nil,
@@ -89,7 +89,7 @@ struct ConditionTemplate: Identifiable, Codable, Equatable {
         self.plan = try c.decode(String.self, forKey: .plan)
         _ = try? c.decode(LegacyTemplateLevel.self, forKey: .level)
         self.category = (try? c.decode(TemplateCategory.self, forKey: .category)) ?? .general
-        self.defaultStyle = (try? c.decode(PlanEntryStyle.self, forKey: .defaultStyle)) ?? .clinical
+        self.defaultStyle = (try? c.decode(PlanEntryStyle.self, forKey: .defaultStyle)) ?? .diagnosis
         self.isPinned = try c.decode(Bool.self, forKey: .isPinned)
         self.isVisible = try c.decodeIfPresent(Bool.self, forKey: .isVisible) ?? true
         self.order = try c.decodeIfPresent(Int.self, forKey: .order)
@@ -113,29 +113,43 @@ struct ConditionTemplate: Identifiable, Codable, Equatable {
     }
 }
 enum PlanEntryStyle: String, Codable, CaseIterable, Identifiable {
-    case clinical
+    case diagnosis
     case education
 
     var id: String { rawValue }
 
     var leftLabel: String {
         switch self {
-        case .clinical: return "Assessment"
+        case .diagnosis: return "Assessment"
         case .education: return "Overview"
         }
     }
 
     var rightLabel: String {
         switch self {
-        case .clinical: return "Plan"
+        case .diagnosis: return "Plan"
         case .education: return "Treatment Options"
         }
     }
 
     var menuTitle: String {
         switch self {
-        case .clinical: return "Assessment / Plan"
+        case .diagnosis: return "Assessment / Plan"
         case .education: return "Overview / Treatment Options"
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+
+        switch raw {
+        case "clinical", "diagnosis":
+            self = .diagnosis
+        case "education":
+            self = .education
+        default:
+            self = .diagnosis
         }
     }
 }
@@ -146,8 +160,8 @@ struct PlanEntry: Identifiable, Codable, Equatable {
     var title: String
     var originalTitle: String
 
-    var style: PlanEntryStyle = .clinical
-    var originalStyle: PlanEntryStyle = .clinical
+    var style: PlanEntryStyle = .diagnosis
+    var originalStyle: PlanEntryStyle = .diagnosis
     
     var assessment: String
     var plan: String
@@ -165,7 +179,7 @@ extension PlanEntry {
         templateID = try? c.decode(UUID.self, forKey: .templateID)
         title = try c.decode(String.self, forKey: .title)
         originalTitle = try c.decode(String.self, forKey: .originalTitle)
-        style = (try? c.decode(PlanEntryStyle.self, forKey: .style)) ?? .clinical
+        style = (try? c.decode(PlanEntryStyle.self, forKey: .style)) ?? .diagnosis
         originalStyle = (try? c.decode(PlanEntryStyle.self, forKey: .originalStyle)) ?? style
         assessment = try c.decode(String.self, forKey: .assessment)
         plan = try c.decode(String.self, forKey: .plan)
@@ -626,7 +640,7 @@ final class AppStore: ObservableObject {
                 assessment: "Dry eye secondary to meibomian gland dysfunction/exposure OU.",
                 plan: "Hot compresses 5–10 minutes daily, then gentle lid massage. Consider lid hygiene and preservative-free artificial tears as needed. If symptoms persist, consider anti-inflammatory dry eye treatment.",
                 category: "dryEye",
-                defaultStyle: .clinical,
+                defaultStyle: .diagnosis,
                 isPinned: true,
                 isVisible: true,
                 order: 0
@@ -636,7 +650,7 @@ final class AppStore: ObservableObject {
                 assessment: "Glaucoma suspect based on optic nerve/IOP risk factors.",
                 plan: "Monitor with periodic IOP checks, optic nerve/OCT imaging, and visual field testing. Escalate to treatment/referral if progression or consistently elevated pressures.",
                 category: "glaucoma",
-                defaultStyle: .clinical,
+                defaultStyle: .diagnosis,
                 isPinned: true,
                 isVisible: true,
                 order: 1
@@ -646,7 +660,7 @@ final class AppStore: ObservableObject {
                 assessment: "Primary open-angle glaucoma.",
                 plan: "Continue/Initiate IOP-lowering therapy as indicated. Monitor with IOP, OCT, and VF at appropriate intervals. Consider ophthalmology co-management.",
                 category: "glaucoma",
-                defaultStyle: .clinical,
+                defaultStyle: .diagnosis,
                 isPinned: false,
                 isVisible: true,
                 order: 2
@@ -975,7 +989,7 @@ private struct NewPlanView: View {
                                 toggleTemplateSelection(t)
                             } label: {
                                 HStack(spacing: 10) {
-                                    Image(systemName: t.defaultStyle == .clinical ? "stethoscope" : "info.circle")
+                                    Image(systemName: t.defaultStyle == .diagnosis ? "stethoscope" : "info.circle")
                                         .foregroundStyle(.secondary)
 
                                     Text(t.title)
@@ -1001,7 +1015,7 @@ private struct NewPlanView: View {
                             toggleTemplateSelection(t)
                         } label: {
                             HStack(spacing: 10) {
-                                Image(systemName: t.defaultStyle == .clinical ? "stethoscope" : "info.circle")
+                                Image(systemName: t.defaultStyle == .diagnosis ? "stethoscope" : "info.circle")
                                     .foregroundStyle(.secondary)
 
                                 Text(t.title)
@@ -1097,14 +1111,14 @@ private struct NewPlanView: View {
 
                                     Spacer()
                                     Menu {
-                                        Button(PlanEntryStyle.clinical.menuTitle) {
-                                            applyStyle(.clinical, to: &entry)
+                                        Button(PlanEntryStyle.diagnosis.menuTitle) {
+                                            applyStyle(.diagnosis, to: &entry)
                                         }
                                         Button(PlanEntryStyle.education.menuTitle) {
                                             applyStyle(.education, to: &entry)
                                         }
                                     } label: {
-                                        Image(systemName: entry.style == .clinical ? "stethoscope" : "info.circle")
+                                        Image(systemName: entry.style == .diagnosis ? "stethoscope" : "info.circle")
                                             .foregroundStyle(.secondary)
                                     }
                                     .buttonStyle(.plain)
@@ -1248,8 +1262,8 @@ private struct NewPlanView: View {
                 templateID: nil,
                 title: "Other",
                 originalTitle: "Other",
-                style: .clinical,
-                originalStyle: .clinical,
+                style: .diagnosis,
+                originalStyle: .diagnosis,
                 assessment: "",
                 plan: "",
                 originalAssessment: "",
@@ -1271,14 +1285,14 @@ private struct NewPlanView: View {
         }
 
         switch (entry.style, newStyle) {
-        case (.clinical, .education):
+        case (.diagnosis, .education):
             if !trimmedTitle.lowercased().hasPrefix("about ") {
                 let baseCurrent = stripAbout(trimmedTitle)
                 let base = (stripAbout(trimmedTitle) == stripAbout(baseOriginal)) ? stripAbout(baseOriginal) : baseCurrent
                 entry.title = base.isEmpty ? "About" : "About \(base)"
             }
 
-        case (.education, .clinical):
+        case (.education, .diagnosis):
             if trimmedTitle.lowercased().hasPrefix("about ") {
                 let stripped = stripAbout(trimmedTitle)
                 entry.title = stripped.isEmpty ? baseOriginal : stripped
@@ -1449,7 +1463,7 @@ private func matchesCategory(_ t: ConditionTemplate, filter: CategoryFilter) -> 
 }
 private enum TemplateStyleFilter: String, CaseIterable, Identifiable {
     case all = "All"
-    case clinical = "Clinical"
+    case diagnosis = "Diagnosis"
     case education = "Education"
 
     var id: String { rawValue }
@@ -1459,8 +1473,8 @@ private func matchesStyle(_ t: ConditionTemplate, filter: TemplateStyleFilter) -
     switch filter {
     case .all:
         return true
-    case .clinical:
-        return t.defaultStyle == .clinical
+    case .diagnosis:
+        return t.defaultStyle == .diagnosis
     case .education:
         return t.defaultStyle == .education
     }
@@ -1743,7 +1757,7 @@ private struct ManageTemplatesView: View {
     @ViewBuilder
     private func manageTemplateRow(_ t: ConditionTemplate) -> some View {
         HStack(spacing: 10) {
-            Image(systemName: t.defaultStyle == .clinical ? "stethoscope" : "info.circle")
+            Image(systemName: t.defaultStyle == .diagnosis ? "stethoscope" : "info.circle")
                 .foregroundStyle(.secondary)
                 .frame(width: 22)
 
@@ -1835,15 +1849,15 @@ private struct ManageTemplateDetail: View {
     @State private var originalCategory: TemplateCategory = .general
     @State private var originalIsPinned: Bool = false
     @State private var originalIsVisible: Bool = true
-    @State private var defaultStyle: PlanEntryStyle = .clinical
-    @State private var originalDefaultStyle: PlanEntryStyle = .clinical
+    @State private var defaultStyle: PlanEntryStyle = .diagnosis
+    @State private var originalDefaultStyle: PlanEntryStyle = .diagnosis
 
     private var leftFieldLabel: String {
-        defaultStyle == .clinical ? "Default Assessment" : "Default Overview"
+        defaultStyle == .diagnosis ? "Default Assessment" : "Default Overview"
     }
 
     private var rightFieldLabel: String {
-        defaultStyle == .clinical ? "Default Plan" : "Default Treatment Options"
+        defaultStyle == .diagnosis ? "Default Plan" : "Default Treatment Options"
     }
 
     private func stripAboutPrefix(_ s: String) -> String {
@@ -1861,15 +1875,15 @@ private struct ManageTemplateDetail: View {
         let currentTrimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
 
         switch (old, new) {
-        case (.clinical, .education):
+        case (.diagnosis, .education):
             // If switching to Education, prepend "About" unless already present.
             if !currentTrimmed.lowercased().hasPrefix("about ") {
                 let base = stripAboutPrefix(currentTrimmed)
                 title = base.isEmpty ? "About" : "About \(base)"
             }
 
-        case (.education, .clinical):
-            // If switching back to Clinical, remove the "About" prefix if present.
+        case (.education, .diagnosis):
+            // If switching back to diagnosis, remove the "About" prefix if present.
             if currentTrimmed.lowercased().hasPrefix("about ") {
                 let base = stripAboutPrefix(currentTrimmed)
                 title = base.isEmpty ? originalTitle : base
@@ -1972,15 +1986,15 @@ private struct ManageTemplateDetail: View {
                 Spacer()
 
                 Menu {
-                    Button(PlanEntryStyle.clinical.menuTitle) {
-                        defaultStyle = .clinical
+                    Button(PlanEntryStyle.diagnosis.menuTitle) {
+                        defaultStyle = .diagnosis
                     }
 
                     Button(PlanEntryStyle.education.menuTitle) {
                         defaultStyle = .education
                     }
                 } label: {
-                    Image(systemName: defaultStyle == .clinical ? "stethoscope" : "info.circle")
+                    Image(systemName: defaultStyle == .diagnosis ? "stethoscope" : "info.circle")
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 8)
@@ -2226,7 +2240,7 @@ private struct TemplateEditorSheet: View {
     @State private var category: TemplateCategory = .general
     @State private var isPinned: Bool = false
     @State private var isVisible: Bool = true
-    @State private var defaultStyle: PlanEntryStyle = .clinical
+    @State private var defaultStyle: PlanEntryStyle = .diagnosis
 
     @State private var loadedID: UUID? = nil
 
@@ -2255,18 +2269,18 @@ private struct TemplateEditorSheet: View {
 
                 Section("Default Format") {
                     Picker("Format", selection: $defaultStyle) {
-                        Text("Clinical").tag(PlanEntryStyle.clinical)
+                        Text("Diagnosis").tag(PlanEntryStyle.diagnosis)
                         Text("Education").tag(PlanEntryStyle.education)
                     }
                     .pickerStyle(.segmented)
                 }
 
-                Section(defaultStyle == .clinical ? "Assessment" : "Overview") {
+                Section(defaultStyle == .diagnosis ? "Assessment" : "Overview") {
                     TextEditor(text: $assessment)
                         .frame(minHeight: 120)
                 }
 
-                Section(defaultStyle == .clinical ? "Plan" : "Treatment Options") {
+                Section(defaultStyle == .diagnosis ? "Plan" : "Treatment Options") {
                     TextEditor(text: $plan)
                         .frame(minHeight: 160)
                 }
@@ -2304,7 +2318,7 @@ private struct TemplateEditorSheet: View {
                 self.category = .general
                 self.isPinned = false
                 self.isVisible = true
-                self.defaultStyle = .clinical
+                self.defaultStyle = .diagnosis
                 self.title = ""
                 self.assessment = ""
                 self.plan = ""
