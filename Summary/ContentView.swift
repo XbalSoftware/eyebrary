@@ -454,7 +454,9 @@ final class AppStore: ObservableObject {
     func letterheadURL(named name: String) -> URL {
         letterheadsDirectoryURL().appendingPathComponent(name)
     }
-
+    func bundledBlankLetterheadURL() -> URL? {
+        Bundle.main.url(forResource: "Blank", withExtension: "pdf")
+    }
     func addLetterhead(from pickedURL: URL) throws {
         let name = pickedURL.lastPathComponent
         let dest = letterheadURL(named: name)
@@ -1181,7 +1183,7 @@ private struct NewPlanView: View {
                 Spacer()
 
                 Menu {
-                    Button("None") {
+                    Button("Blank (Built-in)") {
                         store.selectedLetterheadName = nil
                     }
 
@@ -1203,7 +1205,7 @@ private struct NewPlanView: View {
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "doc.text")
-                        Text(store.selectedLetterheadName ?? "Letterhead")
+                        Text(store.selectedLetterheadName ?? "Blank (Built-in)")
                             .lineLimit(1)
                         Image(systemName: "chevron.up.chevron.down")
                             .font(.footnote)
@@ -1353,7 +1355,7 @@ private struct NewPlanView: View {
                 reportTitle: reportTitle,
                 reportDate: reportDate,
                 entries: planEntries,
-                letterheadURL: store.selectedLetterheadName.map { store.letterheadURL(named: $0) }
+                letterheadURL: store.selectedLetterheadName.map { store.letterheadURL(named: $0) } ?? store.bundledBlankLetterheadURL()
             )
             shareItem = ShareItem(url: url)
         } catch {
@@ -2382,15 +2384,36 @@ private struct SettingsView: View {
     @State private var exportDoc: TemplatesJSONDocument? = nil
 
     @State private var showImportTemplatesSheet = false
-    @State private var importMerge = true
+    @State private var importMode: TemplateImportMode = .merge
+    @State private var showReplaceImportWarning: Bool = false
+    @State private var pendingImportData: Data? = nil
 
     @State private var showLetterheadImporter = false
     @State private var showFactoryResetConfirm = false
 
+    private enum TemplateImportMode: String, CaseIterable, Identifiable {
+        case merge = "Merge Imports"
+        case replace = "Replace Template Library"
+
+        var id: String { rawValue }
+    }
+
     var body: some View {
         List {
             Section("Templates") {
-                Toggle("Merge on import", isOn: $importMerge)
+                HStack {
+                    Text("Import Mode")
+
+                    Spacer()
+
+                    Picker("", selection: $importMode) {
+                        ForEach(TemplateImportMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                }
 
                 Button {
                     do {
@@ -2420,7 +2443,7 @@ private struct SettingsView: View {
                         get: { store.selectedLetterheadName },
                         set: { store.selectedLetterheadName = $0 }
                     )) {
-                        Text("None").tag(String?.none)
+                        Text("Blank (Built-in)").tag(String?.none)
                         ForEach(store.letterheads, id: \.self) { name in
                             Text(name).tag(String?.some(name))
                         }
@@ -2494,7 +2517,12 @@ private struct SettingsView: View {
                         let started = url.startAccessingSecurityScopedResource()
                         defer { if started { url.stopAccessingSecurityScopedResource() } }
                         let data = try Data(contentsOf: url)
-                        try store.importTemplatesJSON(data, merge: importMerge)
+                        if importMode == .merge {
+                            try store.importTemplatesJSON(data, merge: true)
+                        } else {
+                            pendingImportData = data
+                            showReplaceImportWarning = true
+                        }
                     } catch {
                         // ignore
                     }
@@ -2520,6 +2548,22 @@ private struct SettingsView: View {
             case .failure:
                 break
             }
+        }
+        .alert("Replace template library?", isPresented: $showReplaceImportWarning) {
+            Button("Replace", role: .destructive) {
+                guard let data = pendingImportData else { return }
+                do {
+                    try store.importTemplatesJSON(data, merge: false)
+                } catch {
+                    print("Template import failed:", error)
+                }
+                pendingImportData = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingImportData = nil
+            }
+        } message: {
+            Text("This will delete your current template library and replace it with the imported templates.")
         }
     }
 }
