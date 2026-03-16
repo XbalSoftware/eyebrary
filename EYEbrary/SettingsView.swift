@@ -34,6 +34,7 @@ struct SettingsView: View {
     @EnvironmentObject private var store: AppStore
     @State private var importErrorMessage: String?
     @State private var showResetConfirm = false
+    @State private var resetSuccessMessage: String?
     @State private var pendingImportMode: TemplateImportMode?
     @State private var showImportModeDialog = false
     @State private var importSuccessMessage: String?
@@ -82,6 +83,12 @@ struct SettingsView: View {
 
                 Button("Export Library") {
                     exportTemplates()
+                }
+            }
+
+            Section {
+                NavigationLink("About") {
+                    AboutView()
                 }
             }
 
@@ -180,10 +187,21 @@ struct SettingsView: View {
         .alert("Reset everything?", isPresented: $showResetConfirm) {
             Button("Reset", role: .destructive) {
                 store.resetToFactoryDefaults()
+                resetSuccessMessage = "EYEbrary has been restored to factory defaults."
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This will remove custom templates, categories, letterheads, and saved history.")
+        }
+        .alert("Reset Complete", isPresented: Binding(
+            get: { resetSuccessMessage != nil },
+            set: { if !$0 { resetSuccessMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) {
+                resetSuccessMessage = nil
+            }
+        } message: {
+            Text(resetSuccessMessage ?? "")
         }
     }
 

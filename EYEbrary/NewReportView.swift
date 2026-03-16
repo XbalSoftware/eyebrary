@@ -25,7 +25,8 @@ struct NewReportView: View {
     private let reportTitlePresets: [String] = [
         "Eye Exam Summary",
         "Patient Information",
-        "Topics Discussed"
+        "Topics Discussed",
+        "Instructions"
     ]
     @State private var patientName: String = ""
     @State private var reportDate: Date = Date()
@@ -341,7 +342,7 @@ struct NewReportView: View {
                 }
 
                 HStack(spacing: 12) {
-                    TextField("Patient Name", text: $patientName)
+                    TextField("Patient Name (optional)", text: $patientName)
                         .textFieldStyle(.roundedBorder)
 
                     DatePicker(

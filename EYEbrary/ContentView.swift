@@ -15,6 +15,14 @@ import PDFKit
 
 struct ContentView: View {
     @StateObject private var store = AppStore()
+    
+    @State private var showLaunchAcknowledgement: Bool = false
+
+    private let launchAcknowledgementKey = "EYEbrary.hasAcknowledgedAppInformation.v1"
+
+    private var launchAcknowledgementMessage: String {
+        "EYEbrary is a report-generation tool intended for use by qualified eye care professionals.\n\nDefault library entries are provided as editable templates and may not reflect current clinical guidance.\n\nAll information included in a generated report must be reviewed and approved by the practitioner before being provided to a patient."
+    }
 
     var body: some View {
         TabView {
@@ -34,6 +42,18 @@ struct ContentView: View {
             .tabItem { Label("Settings", systemImage: "gearshape") }
         }
         .environmentObject(store)
+        .onAppear {
+            if !UserDefaults.standard.bool(forKey: launchAcknowledgementKey) {
+                showLaunchAcknowledgement = true
+            }
+        }
+        .alert("App Information", isPresented: $showLaunchAcknowledgement) {
+            Button("Continue") {
+                UserDefaults.standard.set(true, forKey: launchAcknowledgementKey)
+            }
+        } message: {
+            Text(launchAcknowledgementMessage)
+        }
     }
 }
 
@@ -69,4 +89,3 @@ func matchesCategory(_ t: LibraryEntry, filter: CategoryFilter) -> Bool {
         return t.category == id
     }
 }
-

@@ -253,6 +253,7 @@ final class AppStore: ObservableObject {
     private let categoriesKey = "EYEbrary.categories.v1"
     private let plansKey = "EYEbrary.savedPlans.v1"
     private let letterheadsKey = "EYEbrary.letterheads.v1"
+    private let launchAcknowledgementKey = "EYEbrary.hasAcknowledgedAppInformation.v1"
 
     init() {
         loadCategories()
@@ -553,6 +554,7 @@ final class AppStore: ObservableObject {
         plans = []
         letterheads = []
         selectedLetterheadName = nil
+        UserDefaults.standard.removeObject(forKey: launchAcknowledgementKey)
     }
 
     private func seedDefaultCategories() {
