@@ -1,0 +1,781 @@
+//
+//  ManageLibraryView.swift
+//  EYEbrary
+//
+//  Created by Simon Reid on 2026-03-15.
+//
+import SwiftUI
+import Foundation
+import Combine
+
+// MARK: - Manage Library
+
+struct ManageLibraryView: View {
+    @EnvironmentObject private var store: AppStore
+
+    @State private var query: String = ""
+    @State private var categoryFilter: CategoryFilter = .all
+    @State private var selectedID: UUID? = nil
+    @State private var pendingDeleteEntryID: UUID? = nil
+    @State private var showDeleteEntryConfirm: Bool = false
+    @State private var showCreateEntrySheet: Bool = false
+    @State private var detailIsEditing: Bool = false
+    @State private var detailHasUnsavedChanges: Bool = false
+    @State private var pendingSelectionID: UUID? = nil
+    @State private var showDiscardChangesAlert: Bool = false
+
+    private var filtered: [LibraryEntry] {
+        let base = store.entries.filter { matchesCategory($0, filter: categoryFilter) }
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let list: [LibraryEntry]
+        if q.isEmpty {
+            list = base.sorted { a, b in
+                // Use ordering first; keep pinned grouped visually above non-pinned.
+                if a.isFavorite != b.isFavorite { return a.isFavorite && !b.isFavorite }
+                let ao = a.order ?? Int.max
+                let bo = b.order ?? Int.max
+                if ao != bo { return ao < bo }
+                return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
+            }
+        } else {
+            list = base.filter {
+                $0.title.localizedCaseInsensitiveContains(q) ||
+                $0.body.localizedCaseInsensitiveContains(q)
+            }
+            .sorted { a, b in
+                if a.isFavorite != b.isFavorite { return a.isFavorite && !b.isFavorite }
+                let ao = a.order ?? Int.max
+                let bo = b.order ?? Int.max
+                if ao != bo { return ao < bo }
+                return a.updatedAt > b.updatedAt
+            }
+        }
+        return list
+    }
+
+    private var selectedEntry: LibraryEntry? {
+        guard let id = selectedID else { return nil }
+        return store.entry(id: id)
+    }
+
+    private var orderedCategories: [CategoryItem] {
+        store.categories.sorted { $0.order < $1.order }
+    }
+
+    private var nonGeneralCategories: [CategoryItem] {
+        orderedCategories.filter { ( $0.id.isEmpty ? EntryCategory.general : $0.id ) != .general }
+    }
+
+    var body: some View {
+        NavigationSplitView {
+            manageSidebar
+                .navigationSplitViewColumnWidth(
+                    min: 280,
+                    ideal: 360,
+                    max: 420
+                )
+        } detail: {
+            manageDetail
+        }
+        .navigationTitle("Manage Library")
+        .alert("Delete entry?", isPresented: $showDeleteEntryConfirm) {
+            Button("Delete", role: .destructive) {
+                if let id = pendingDeleteEntryID,
+                   let idx = store.entries.firstIndex(where: { $0.id == id }) {
+                    store.entries.remove(at: idx)
+                    if selectedID == id { selectedID = nil }
+                }
+                pendingDeleteEntryID = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingDeleteEntryID = nil
+            }
+        } message: {
+            Text("This will permanently delete the entry.")
+        }
+        .alert("Discard unsaved changes?", isPresented: $showDiscardChangesAlert) {
+            Button("Discard Changes", role: .destructive) {
+                if let pending = pendingSelectionID {
+                    selectedID = pending
+                }
+                pendingSelectionID = nil
+                detailIsEditing = false
+                detailHasUnsavedChanges = false
+            }
+            Button("Cancel", role: .cancel) {
+                pendingSelectionID = nil
+            }
+        } message: {
+            Text("Any unsaved changes will be lost if you leave this entry without saving.")
+        }
+        .sheet(isPresented: $showCreateEntrySheet) {
+            EntryEditorSheet(mode: .create)
+                .environmentObject(store)
+        }
+    }
+
+    private var manageSidebar: some View {
+        VStack(spacing: 12) {
+            manageHeader
+            manageCategoryChips
+            manageSearch
+            manageEntriesList
+        }
+        .padding(.bottom, 8)
+    }
+
+    private var manageHeader: some View {
+        HStack(spacing: 12) {
+            Spacer()
+
+            Text("Library")
+                .font(.system(size: 20, weight: .bold))
+
+            Spacer()
+
+            Button {
+                showCreateEntrySheet = true
+            } label: {
+                Label("New Entry", systemImage: "plus")
+                    .labelStyle(.iconOnly)
+                    .font(.system(size: 18, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal)
+        .padding(.top, 8)
+    }
+
+
+    private var manageCategoryChips: some View {
+        HStack(spacing: 10) {
+            if categoryFilter != .all {
+                Button {
+                    categoryFilter = .all
+                } label: {
+                    Text("All")
+                        .font(.footnote)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color.secondary.opacity(0.12))
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("All Categories")
+            }
+
+            Menu {
+                Button {
+                    categoryFilter = .all
+                } label: {
+                    if categoryFilter == .all {
+                        Label("All Categories", systemImage: "checkmark")
+                    } else {
+                        Text("All Categories")
+                    }
+                }
+
+                Divider()
+
+                ForEach(orderedCategories) { item in
+                    let cat: EntryCategory = item.id.isEmpty ? .general : item.id
+                    Button {
+                        categoryFilter = .category(cat)
+                    } label: {
+                        if categoryFilter == .category(cat) {
+                            Label(item.name, systemImage: "checkmark")
+                        } else {
+                            Text(item.name)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Text("Category:")
+                        .foregroundStyle(.secondary)
+                    Text(categoryFilter.displayName(using: store))
+                        .lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .font(.footnote)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.secondary.opacity(0.12))
+                )
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal)
+        .padding(.top, 2)
+    }
+
+    private var manageSearch: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+
+            TextField("Search", text: $query)
+                .textFieldStyle(.plain)
+                .autocorrectionDisabled(true)
+
+            if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Button {
+                    query = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.secondary.opacity(0.15))
+        )
+        .padding(.horizontal)
+        .padding(.top, 8)
+    }
+
+    private var manageEntriesList: some View {
+        List(selection: $selectedID) {
+            if filtered.isEmpty {
+                ContentUnavailableView(
+                    "No entries",
+                    systemImage: "doc.text",
+                    description: Text("Tap + to add a library entry.")
+                )
+                .listRowBackground(Color.clear)
+            } else {
+                ForEach(filtered) { t in
+                    manageEntryRow(t)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) {
+                                pendingDeleteEntryID = t.id
+                                showDeleteEntryConfirm = true
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
+                }
+                .onMove(perform: handleMove)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func manageEntryRow(_ t: LibraryEntry) -> some View {
+        HStack(spacing: 10) {
+
+            Text(t.title)
+                .font(.subheadline)
+                .lineLimit(2)
+                .layoutPriority(1)
+
+            Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard selectedID != t.id else { return }
+
+            if detailIsEditing && detailHasUnsavedChanges {
+                pendingSelectionID = t.id
+                showDiscardChangesAlert = true
+            } else {
+                selectedID = t.id
+            }
+        }
+    }
+
+    private func handleMove(from source: IndexSet, to destination: Int) {
+        // Only allow reordering when not searching.
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard q.isEmpty else { return }
+
+        var ids = filtered.map { $0.id }
+        ids.move(fromOffsets: source, toOffset: destination)
+        store.applyReorder(orderedIDs: ids)
+    }
+
+
+
+    private var manageDetail: some View {
+        Group {
+            if let t = selectedEntry {
+                ManageEntryDetail(
+                    selectedID: $selectedID,
+                    isEditingExternal: $detailIsEditing,
+                    hasUnsavedChangesExternal: $detailHasUnsavedChanges,
+                    entry: t
+                )
+            } else {
+                ContentUnavailableView(
+                    "Select an entry",
+                    systemImage: "doc.text.magnifyingglass",
+                    description: Text("Choose a library entry from the left to edit it.")
+                )
+            }
+        }
+    }
+
+    // removed createNewTemplate()
+
+    private func changeCategory(for ids: [UUID], to newCategory: EntryCategory) {
+        for id in ids {
+            guard var t = store.entry(id: id) else { continue }
+            t.category = newCategory
+            t.updatedAt = Date()
+            store.updateEntry(t)
+        }
+    }
+}
+private struct ManageEntryDetail: View {
+    @EnvironmentObject private var store: AppStore
+    @Binding var selectedID: UUID?
+    @Binding var isEditingExternal: Bool
+    @Binding var hasUnsavedChangesExternal: Bool
+    @State private var showDeleteConfirm: Bool = false
+
+    let entry: LibraryEntry
+
+    @State private var title: String = ""
+    @State private var bodyText: String = ""
+    @State private var category: EntryCategory = .general
+    @State private var isFavorite: Bool = false
+    @State private var isVisible: Bool = true
+
+    @State private var didLoad = false
+
+    @State private var isEditing: Bool = false
+
+    @State private var originalTitle: String = ""
+    @State private var originalBodyText: String = ""
+    @State private var originalCategory: EntryCategory = .general
+    @State private var originalIsFavorite: Bool = false
+    @State private var originalIsVisible: Bool = true
+
+    private var bodyFieldLabel: String {
+        "Entry Content"
+    }
+
+    private var hasUnsavedChanges: Bool {
+        title != originalTitle
+            || bodyText != originalBodyText
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                TextField("Entry title", text: $title)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.title3)
+                    .disabled(!isEditing)
+
+                Spacer()
+
+                if isEditing {
+                    Button("Done") {
+                        commitEdits()
+                        isEditing = false
+                        isEditingExternal = false
+                        hasUnsavedChangesExternal = false
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button("Cancel") {
+                        discardEdits()
+                        isEditing = false
+                        isEditingExternal = false
+                        hasUnsavedChangesExternal = false
+                    }
+                    .buttonStyle(.bordered)
+                } else {
+                    Button("Edit") {
+                        beginEditing()
+                        isEditing = true
+                        isEditingExternal = true
+                        hasUnsavedChangesExternal = false
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+            .padding(.horizontal)
+            .padding(.top, 8)
+
+            HStack {
+                Text("Category")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Picker("Category", selection: $category) {
+                    let cats = store.categories.sorted { $0.order < $1.order }
+                    ForEach(cats) { item in
+                        Text(item.name).tag(item.id.isEmpty ? .general : item.id)
+                    }
+                }
+                .pickerStyle(.menu)
+            }
+            .padding(.horizontal)
+
+            HStack {
+                Text("Visible in New Report")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Toggle("", isOn: $isVisible)
+                    .labelsHidden()
+            }
+            .padding(.horizontal)
+
+            HStack {
+                Text("Favorite")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Toggle("", isOn: $isFavorite)
+                    .labelsHidden()
+            }
+            .padding(.horizontal)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(bodyFieldLabel)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextEditor(text: $bodyText)
+                    .disabled(!isEditing)
+                    .frame(minHeight: 260)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(.secondary.opacity(0.35))
+                    )
+            }
+            .padding(.horizontal)
+
+            Spacer()
+
+            if isEditing {
+                HStack {
+                    Spacer()
+
+            Button(role: .destructive) {
+                showDeleteConfirm = true
+            } label: {
+                Label("Delete Entry", systemImage: "trash")
+                    .font(.subheadline)
+            }
+            .buttonStyle(.bordered)
+                }
+                .padding(.horizontal)
+                .padding(.bottom, 12)
+            }
+        }
+        .alert("Delete entry?", isPresented: $showDeleteConfirm) {
+            Button("Delete", role: .destructive) {
+                let id = entry.id
+                store.entries.removeAll { $0.id == id }
+                selectedID = nil
+                isEditing = false
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will permanently delete the library entry.")
+        }
+        .onAppear {
+            loadIfNeeded()
+            isEditing = false
+            isEditingExternal = false
+            hasUnsavedChangesExternal = false
+        }
+        .onChange(of: entry.id) { _, _ in
+            didLoad = false
+            isEditing = false
+            isEditingExternal = false
+            hasUnsavedChangesExternal = false
+            loadIfNeeded()
+        }
+        .onChange(of: isEditing) { _, newValue in
+            isEditingExternal = newValue
+            if !newValue {
+                hasUnsavedChangesExternal = false
+            } else {
+                hasUnsavedChangesExternal = hasUnsavedChanges
+            }
+        }
+        .onChange(of: title) { _, _ in
+            if isEditing {
+                hasUnsavedChangesExternal = hasUnsavedChanges
+            }
+        }
+        .onChange(of: bodyText) { _, _ in
+            if isEditing {
+                hasUnsavedChangesExternal = hasUnsavedChanges
+            }
+        }
+        .onChange(of: category) { _, _ in
+            saveMetadataChangesIfNeeded()
+        }
+        .onChange(of: isFavorite) { _, _ in
+            saveMetadataChangesIfNeeded()
+        }
+        .onChange(of: isVisible) { _, _ in
+            saveMetadataChangesIfNeeded()
+        }
+    }
+    private func saveMetadataChangesIfNeeded() {
+        guard didLoad else { return }
+        guard !isEditing else { return }
+        guard var t = store.entry(id: entry.id) else { return }
+
+        let metadataChanged = t.category != category
+            || t.isFavorite != isFavorite
+            || t.isVisible != isVisible
+
+        guard metadataChanged else { return }
+
+        t.category = category
+        t.isFavorite = isFavorite
+        t.isVisible = isVisible
+        t.updatedAt = Date()
+        store.updateEntry(t)
+
+        originalCategory = t.category
+        originalIsFavorite = t.isFavorite
+        originalIsVisible = t.isVisible
+    }
+    private func loadIfNeeded() {
+        guard !didLoad else { return }
+        didLoad = true
+
+        title = entry.title
+        bodyText = entry.body
+        category = entry.category
+        originalCategory = entry.category
+        isFavorite = entry.isFavorite
+        isVisible = entry.isVisible
+        originalIsFavorite = entry.isFavorite
+        originalIsVisible = entry.isVisible
+
+        // Capture originals so Cancel can revert.
+        originalTitle = entry.title
+        originalBodyText = entry.body
+    }
+
+    private func beginEditing() {
+        // Refresh originals from the current stored version.
+        guard let t = store.entry(id: entry.id) else { return }
+        originalTitle = t.title
+        originalBodyText = t.body
+        originalCategory = t.category
+        originalIsFavorite = t.isFavorite
+        originalIsVisible = t.isVisible
+
+        title = t.title
+        bodyText = t.body
+        category = t.category
+        isFavorite = t.isFavorite
+        isVisible = t.isVisible
+    }
+
+    private func discardEdits() {
+        title = originalTitle
+        bodyText = originalBodyText
+        category = originalCategory
+        isFavorite = originalIsFavorite
+        isVisible = originalIsVisible
+        isEditingExternal = false
+        hasUnsavedChangesExternal = false
+    }
+
+    private func commitEdits() {
+        guard didLoad else { return }
+        guard var t = store.entry(id: entry.id) else { return }
+
+        t.title = title
+        t.body = bodyText
+        t.category = category
+        t.isFavorite = isFavorite
+        t.isVisible = isVisible
+
+        t.updatedAt = Date()
+        store.updateEntry(t)
+
+        // Update originals after saving.
+        originalTitle = t.title
+        originalBodyText = t.body
+        originalCategory = t.category
+        originalIsFavorite = t.isFavorite
+        originalIsVisible = t.isVisible
+        isEditingExternal = false
+        hasUnsavedChangesExternal = false
+    }
+}
+
+private enum EntryEditorMode: Equatable {
+    case create
+    case edit(id: UUID)
+}
+
+private struct EntryEditorSheet: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+
+    let mode: EntryEditorMode
+
+    @State private var title: String = ""
+    @State private var bodyText: String = ""
+
+    @State private var category: EntryCategory = .general
+    @State private var isFavorite: Bool = false
+    @State private var isVisible: Bool = true
+
+    @State private var loadedID: UUID? = nil
+
+    private var navigationTitle: String {
+        switch mode {
+        case .create:
+            return "New Entry"
+        case .edit:
+            return "Edit Entry"
+        }
+    }
+
+    private var actionTitle: String {
+        switch mode {
+        case .create:
+            return "Create"
+        case .edit:
+            return "Save"
+        }
+    }
+
+    private var canSave: Bool {
+        !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Entry") {
+                    TextField("Entry title", text: $title)
+                        .textInputAutocapitalization(.characters)
+                        .autocorrectionDisabled(true)
+
+                    Picker("Category", selection: $category) {
+                        let cats = store.categories.sorted { $0.order < $1.order }
+                        ForEach(cats) { item in
+                            Text(item.name).tag(item.id.isEmpty ? EntryCategory.general : item.id)
+                        }
+                    }
+
+                    Toggle("Favorite", isOn: $isFavorite)
+                    Toggle("Visible in New Report", isOn: $isVisible)
+                }
+
+                Section {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Entry Content")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        TextEditor(text: $bodyText)
+                            .frame(minHeight: 260)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(.secondary.opacity(0.35))
+                            )
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+            .navigationTitle(navigationTitle)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(actionTitle) {
+                        save()
+                    }
+                    .disabled(!canSave)
+                }
+            }
+            .onAppear {
+                loadIfNeeded()
+            }
+        }
+    }
+
+    private func loadIfNeeded() {
+        switch mode {
+        case .create:
+            guard loadedID == nil else { return }
+            loadedID = UUID()
+            title = ""
+            bodyText = ""
+            category = .general
+            isFavorite = false
+            isVisible = true
+
+        case .edit(let id):
+            guard loadedID != id else { return }
+            guard let entry = store.entry(id: id) else { return }
+            loadedID = id
+            title = entry.title
+            bodyText = entry.body
+            category = entry.category
+            isFavorite = entry.isFavorite
+            isVisible = entry.isVisible
+            // defaultStyle = entry.defaultStyle
+        }
+    }
+
+    private func save() {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedBody = bodyText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty, !trimmedBody.isEmpty else { return }
+
+        switch mode {
+        case .create:
+            let entry = LibraryEntry(
+                title: trimmedTitle,
+                body: trimmedBody,
+                category: category,
+                // defaultStyle: defaultStyle,
+                isFavorite: isFavorite,
+                isVisible: isVisible,
+                order: store.nextOrderValue(),
+                createdAt: Date(),
+                updatedAt: Date()
+            )
+            store.addEntry(entry)
+
+        case .edit(let id):
+            guard var existingEntry = store.entry(id: id) else { return }
+            existingEntry.title = trimmedTitle
+            existingEntry.body = trimmedBody
+            existingEntry.category = category
+            existingEntry.isFavorite = isFavorite
+            existingEntry.isVisible = isVisible
+            existingEntry.updatedAt = Date()
+            store.updateEntry(existingEntry)
+        }
+
+        dismiss()
+    }
+}
