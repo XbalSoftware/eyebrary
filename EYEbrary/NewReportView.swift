@@ -15,6 +15,7 @@ struct NewReportView: View {
 
     @State private var selectedEntryID: UUID? = nil
     @State private var categoryFilter: CategoryFilter = .all
+    @State private var favoritesOnly: Bool = false
 
     // Sidebar search (New Report)
     @State private var query: String = ""
@@ -36,28 +37,14 @@ struct NewReportView: View {
     @State private var pendingDeleteEntryID: UUID? = nil
     @State private var showDeleteWarning: Bool = false
     @State private var showHistorySheet: Bool = false
+    @State private var collapsedSelectedEntries: Bool = false
 
-    private var pinned: [LibraryEntry] {
+    private var filteredEntries: [LibraryEntry] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let base = store.entries
-            .filter { $0.isFavorite && $0.isVisible && matchesCategory($0, filter: categoryFilter) }
-        let filtered = q.isEmpty ? base : base.filter {
-            $0.title.localizedCaseInsensitiveContains(q) ||
-            $0.body.localizedCaseInsensitiveContains(q)
-        }
+            .filter { $0.isVisible && matchesCategory($0, filter: categoryFilter) }
+            .filter { !favoritesOnly || $0.isFavorite }
 
-        return filtered.sorted { (a, b) in
-            let ao = a.order ?? Int.max
-            let bo = b.order ?? Int.max
-            if ao != bo { return ao < bo }
-            return a.updatedAt > b.updatedAt
-        }
-    }
-
-    private var others: [LibraryEntry] {
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let base = store.entries
-            .filter { !$0.isFavorite && $0.isVisible && matchesCategory($0, filter: categoryFilter) }
         let filtered = q.isEmpty ? base : base.filter {
             $0.title.localizedCaseInsensitiveContains(q) ||
             $0.body.localizedCaseInsensitiveContains(q)
@@ -84,21 +71,6 @@ struct NewReportView: View {
             detail
         }
         .navigationTitle("EYEbrary")
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                HStack {
-                    Button {
-                        showHistorySheet = true
-                    } label: {
-                        Image(systemName: "clock.arrow.circlepath")
-                    }
-
-                    Button("Clear") {
-                        clearForm()
-                    }
-                }
-            }
-        }
         .sheet(item: $shareItem) { item in
             ActivityView(items: [item.url])
         }
@@ -139,6 +111,16 @@ struct NewReportView: View {
     private var sidebar: some View {
         VStack(spacing: 12) {
             HStack {
+                Button {
+                    favoritesOnly.toggle()
+                } label: {
+                    Image(systemName: favoritesOnly ? "star.fill" : "star")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(favoritesOnly ? Color.yellow : Color.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(favoritesOnly ? "Showing favorites" : "Show favorites")
+
                 Spacer()
 
                 Text("Library")
@@ -157,6 +139,14 @@ struct NewReportView: View {
             }
             .padding(.horizontal)
             .padding(.top, 8)
+
+            if favoritesOnly {
+                Text("Showing Favorites")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.horizontal)
+            }
 
             // Category selector
             HStack(spacing: 10) {
@@ -253,10 +243,23 @@ struct NewReportView: View {
             .padding(.top, 8)
 
            List(selection: $selectedEntryID) {
-
-                if !pinned.isEmpty {
-                    Section("Favorites") {
-                        ForEach(pinned) { t in
+                Section {
+                    if filteredEntries.isEmpty {
+                        if favoritesOnly {
+                            ContentUnavailableView(
+                                "No favorites yet",
+                                systemImage: "star",
+                                description: Text("Mark entries as favorites in the Library to access them quickly here.")
+                            )
+                        } else {
+                            ContentUnavailableView(
+                                "No entries found",
+                                systemImage: "doc.text",
+                                description: Text("Try a different search or category filter.")
+                            )
+                        }
+                    } else {
+                        ForEach(filteredEntries) { t in
                             Button {
                                 toggleEntrySelection(t)
                             } label: {
@@ -270,31 +273,8 @@ struct NewReportView: View {
 
                                     if isEntrySelected(t.id) {
                                         Image(systemName: "checkmark.circle.fill")
-                                            .foregroundStyle(.tint)
+                                            .foregroundStyle(Color.accentColor)
                                     }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Section {
-                    ForEach(others) { t in
-                        Button {
-                            toggleEntrySelection(t)
-                        } label: {
-                            HStack(spacing: 10) {
-
-                                Text(t.title)
-                                    .font(.subheadline)
-                                    .multilineTextAlignment(.leading)
-                                    .layoutPriority(1)
-
-                                Spacer()
-
-                                if isEntrySelected(t.id) {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundStyle(Color.accentColor)
                                 }
                             }
                         }
@@ -305,9 +285,27 @@ struct NewReportView: View {
     }
     private var detail: some View {
         VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                Spacer()
+
+                Button {
+                    showHistorySheet = true
+                } label: {
+                    Label("History", systemImage: "clock.arrow.circlepath")
+                }
+                .buttonStyle(.bordered)
+
+                Button("Clear") {
+                    clearForm()
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(.horizontal)
+            .padding(.top, 8)
+
             VStack(spacing: 10) {
                 HStack(spacing: 10) {
-                    TextField("Report Title", text: $reportTitle)
+                    TextField("Report Title (optional)", text: $reportTitle)
                         .textFieldStyle(.roundedBorder)
 
                     Menu {
@@ -355,7 +353,6 @@ struct NewReportView: View {
                 }
             }
             .padding(.horizontal)
-            .padding(.top, 8)
 
             if planEntries.isEmpty {
                 ContentUnavailableView(
@@ -365,12 +362,27 @@ struct NewReportView: View {
                 )
                 .padding(.top, 20)
             } else {
+                HStack {
+                    Text("Selected")
+                        .font(.headline)
+
+                    Spacer()
+
+                    Button(collapsedSelectedEntries ? "Expand" : "Collapse") {
+                        collapsedSelectedEntries.toggle()
+                    }
+                    .font(.subheadline)
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal)
+                .padding(.top, 4)
+
                 List {
-                    Section("Selected") {
+                    Section {
                         ForEach($planEntries) { $entry in
                             VStack(alignment: .leading, spacing: 12) {
                                 HStack(alignment: .top) {
-                                    TextField("Entry title", text: $entry.title)
+                                    TextField("ENTER TITLE", text: $entry.title)
                                         .textFieldStyle(.plain)
                                         .font(.headline)
                                         .textInputAutocapitalization(.characters)
@@ -386,16 +398,18 @@ struct NewReportView: View {
                                     .buttonStyle(.plain)
                                 }
 
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text("Content")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                    TextEditor(text: $entry.body)
-                                        .frame(minHeight: 180)
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 8)
-                                                .stroke(.secondary.opacity(0.35))
-                                        )
+                                if !collapsedSelectedEntries {
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        Text("Content")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                        TextEditor(text: $entry.body)
+                                            .frame(minHeight: 180)
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 8)
+                                                    .stroke(.secondary.opacity(0.35))
+                                            )
+                                    }
                                 }
                             }
                             .padding(.vertical, 8)
@@ -409,7 +423,7 @@ struct NewReportView: View {
                 .environment(\.editMode, .constant(.active))
             }
 
-            HStack {
+            HStack(spacing: 12) {
                 Button {
                     generateAndSharePDF()
                 } label: {
@@ -417,8 +431,6 @@ struct NewReportView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(planEntries.isEmpty)
-
-                Spacer()
 
                 Menu {
                     Button("Blank (Built-in)") {
@@ -441,23 +453,27 @@ struct NewReportView: View {
                         }
                     }
                 } label: {
-                    HStack(spacing: 6) {
+                    HStack(spacing: 8) {
                         Image(systemName: "doc.text")
+                            .font(.body)
                         Text(store.selectedLetterheadName ?? "Blank (Built-in)")
+                            .font(.body)
                             .lineLimit(1)
                         Image(systemName: "chevron.up.chevron.down")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
                     .background(
-                        RoundedRectangle(cornerRadius: 8)
+                        RoundedRectangle(cornerRadius: 10)
                             .fill(Color.secondary.opacity(0.12))
                     )
                 }
+                .buttonStyle(.plain)
+
+                Spacer()
             }
             .padding([.horizontal, .bottom])
         }
@@ -491,15 +507,16 @@ struct NewReportView: View {
         }
     }
     private func addOtherEntry() {
-        planEntries.append(
+        planEntries.insert(
             PlanEntry(
                 id: UUID(),
                 templateID: nil,
-                title: "Other",
-                originalTitle: "Other",
+                title: "",
+                originalTitle: "",
                 body: "",
                 originalBody: ""
-            )
+            ),
+            at: 0
         )
     }
     private func needsDeleteWarning(for entry: PlanEntry) -> Bool {
@@ -507,8 +524,7 @@ struct NewReportView: View {
             let trimmedTitle = entry.title.trimmingCharacters(in: .whitespacesAndNewlines)
             let trimmedBody = entry.body.trimmingCharacters(in: .whitespacesAndNewlines)
 
-            let titleIsDefault = trimmedTitle.isEmpty || trimmedTitle == "Other"
-            let hasEdits = !trimmedBody.isEmpty || !titleIsDefault
+            let hasEdits = !trimmedBody.isEmpty || !trimmedTitle.isEmpty
             return hasEdits
         }
         return entry.body != entry.originalBody

@@ -15,6 +15,7 @@ struct ManageLibraryView: View {
 
     @State private var query: String = ""
     @State private var categoryFilter: CategoryFilter = .all
+    @State private var favoriteEditMode: Bool = false
     @State private var selectedID: UUID? = nil
     @State private var pendingDeleteEntryID: UUID? = nil
     @State private var showDeleteEntryConfirm: Bool = false
@@ -31,8 +32,6 @@ struct ManageLibraryView: View {
         let list: [LibraryEntry]
         if q.isEmpty {
             list = base.sorted { a, b in
-                // Use ordering first; keep pinned grouped visually above non-pinned.
-                if a.isFavorite != b.isFavorite { return a.isFavorite && !b.isFavorite }
                 let ao = a.order ?? Int.max
                 let bo = b.order ?? Int.max
                 if ao != bo { return ao < bo }
@@ -44,7 +43,6 @@ struct ManageLibraryView: View {
                 $0.body.localizedCaseInsensitiveContains(q)
             }
             .sorted { a, b in
-                if a.isFavorite != b.isFavorite { return a.isFavorite && !b.isFavorite }
                 let ao = a.order ?? Int.max
                 let bo = b.order ?? Int.max
                 if ao != bo { return ao < bo }
@@ -52,6 +50,10 @@ struct ManageLibraryView: View {
             }
         }
         return list
+    }
+
+    private var hiddenCount: Int {
+        filtered.filter { !$0.isVisible }.count
     }
 
     private var selectedEntry: LibraryEntry? {
@@ -118,15 +120,43 @@ struct ManageLibraryView: View {
     private var manageSidebar: some View {
         VStack(spacing: 12) {
             manageHeader
+            if favoriteEditMode {
+                Text("Tap stars to edit favorites")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.horizontal)
+            }
             manageCategoryChips
             manageSearch
             manageEntriesList
+
+            HStack(spacing: 6) {
+                Text("\(filtered.count) \(filtered.count == 1 ? "entry" : "entries")")
+
+                if hiddenCount > 0 {
+                    Text("(\(hiddenCount) hidden)")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .font(.footnote)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.top, 4)
         }
         .padding(.bottom, 8)
     }
 
     private var manageHeader: some View {
         HStack(spacing: 12) {
+            Button {
+                favoriteEditMode.toggle()
+            } label: {
+                Image(systemName: favoriteEditMode ? "star.fill" : "star")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(favoriteEditMode ? Color.yellow : Color.secondary)
+            }
+            .buttonStyle(.plain)
+
             Spacer()
 
             Text("Library")
@@ -274,13 +304,26 @@ struct ManageLibraryView: View {
     @ViewBuilder
     private func manageEntryRow(_ t: LibraryEntry) -> some View {
         HStack(spacing: 10) {
-
             Text(t.title)
                 .font(.subheadline)
                 .lineLimit(2)
                 .layoutPriority(1)
+                .foregroundStyle(t.isVisible ? Color.primary : Color.red)
 
             Spacer(minLength: 0)
+
+            if favoriteEditMode {
+                Button {
+                    store.toggleFavorite(id: t.id)
+                } label: {
+                    Image(systemName: t.isFavorite ? "star.fill" : "star")
+                        .foregroundStyle(t.isFavorite ? Color.yellow : Color.secondary)
+                }
+                .buttonStyle(.plain)
+            } else if t.isFavorite {
+                Image(systemName: "star.fill")
+                    .foregroundStyle(Color.yellow)
+            }
         }
         .contentShape(Rectangle())
         .onTapGesture {
@@ -382,7 +425,7 @@ private struct ManageEntryDetail: View {
                 Spacer()
 
                 if isEditing {
-                    Button("Done") {
+                    Button(hasUnsavedChanges ? "Save" : "Done") {
                         commitEdits()
                         isEditing = false
                         isEditingExternal = false
@@ -458,7 +501,7 @@ private struct ManageEntryDetail: View {
                     .frame(minHeight: 260)
                     .overlay(
                         RoundedRectangle(cornerRadius: 8)
-                            .stroke(.secondary.opacity(0.35))
+                            .stroke(isEditing && hasUnsavedChanges ? Color.red : .secondary.opacity(0.35))
                     )
             }
             .padding(.horizontal)

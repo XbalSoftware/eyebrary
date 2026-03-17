@@ -44,12 +44,6 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("Letterhead") {
-                if let selected = store.selectedLetterheadName {
-                    Text("Selected: \(selected)")
-                } else {
-                    Text("Selected: Blank (Built-in)")
-                }
-
                 Button("Import Letterhead PDF") {
                     pendingImportKind = .letterhead
                     activeImportKind = .letterhead
@@ -57,21 +51,20 @@ struct SettingsView: View {
 
                 if !store.letterheads.isEmpty {
                     ForEach(store.letterheads, id: \.self) { name in
-                        HStack {
-                            Button {
-                                store.selectedLetterheadName = name
-                            } label: {
-                                HStack {
-                                    Text(name)
-                                    Spacer()
-                                    if store.selectedLetterheadName == name {
-                                        Image(systemName: "checkmark")
-                                            .foregroundStyle(.tint)
-                                    }
-                                }
+                        Button {
+                            store.selectedLetterheadName = name
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: store.selectedLetterheadName == name ? "largecircle.fill.circle" : "circle")
+                                    .foregroundStyle(.tint)
+
+                                Text(name)
+
+                                Spacer()
                             }
-                            .buttonStyle(.plain)
+                            .padding(.leading, 12)
                         }
+                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -87,7 +80,7 @@ struct SettingsView: View {
             }
 
             Section {
-                NavigationLink("About") {
+                NavigationLink("About EYEbrary") {
                     AboutView()
                 }
             }
