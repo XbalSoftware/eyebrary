@@ -39,6 +39,11 @@ final class RichTextEditorCommands: ObservableObject {
         guard let textView else { return }
         RichTextEditorFormatting.toggleBullets(in: textView)
     }
+
+    func toggleNumberedList() {
+        guard let textView else { return }
+        RichTextEditorFormatting.toggleNumberedList(in: textView)
+    }
 }
 
 struct RichTextEditor: UIViewRepresentable {
@@ -387,6 +392,63 @@ private enum RichTextEditorFormatting {
         textView.attributedText = mutable
         let newLength = (replacement as NSString).length
         textView.selectedRange = NSRange(location: paragraphRange.location, length: min(newLength, mutable.length - paragraphRange.location))
+        textView.delegate?.textViewDidChange?(textView)
+    }
+
+    static func toggleNumberedList(in textView: UITextView) {
+        let range = textView.selectedRange
+        guard range.location != NSNotFound else { return }
+
+        let nsText = textView.text as NSString
+        let paragraphRange = nsText.paragraphRange(for: range)
+        let paragraphText = nsText.substring(with: paragraphRange)
+        let lines = paragraphText.components(separatedBy: .newlines)
+
+        let shouldRemoveNumbers = lines
+            .filter { !$0.isEmpty }
+            .allSatisfy { $0.trimmingCharacters(in: .whitespaces).range(of: "^\\d+\\.\\s", options: .regularExpression) != nil }
+
+        var counter = 1
+        let updatedLines = lines.map { line -> String in
+            guard !line.isEmpty else { return line }
+
+            if shouldRemoveNumbers {
+                return line.replacingOccurrences(of: "^\\s*\\d+\\.\\s", with: "", options: .regularExpression)
+            } else {
+                let newLine = "\(counter). \(line)"
+                counter += 1
+                return newLine
+            }
+        }
+
+        let replacement = updatedLines.joined(separator: "\n")
+        let mutable = NSMutableAttributedString(attributedString: textView.attributedText)
+        let replacementAttributed = NSMutableAttributedString(string: replacement, attributes: textView.typingAttributes)
+
+        let fullReplacementRange = NSRange(location: 0, length: replacementAttributed.length)
+        let font = (textView.typingAttributes[.font] as? UIFont) ?? textView.font ?? .preferredFont(forTextStyle: .body)
+        let numberIndent = ceil(("1. " as NSString).size(withAttributes: [.font: font]).width)
+
+        replacementAttributed.enumerateAttribute(.paragraphStyle, in: fullReplacementRange, options: []) { value, subrange, _ in
+            let style = ((value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+
+            if shouldRemoveNumbers {
+                style.firstLineHeadIndent = 0
+                style.headIndent = 0
+            } else {
+                style.firstLineHeadIndent = 0
+                style.headIndent = numberIndent
+            }
+
+            replacementAttributed.addAttribute(.paragraphStyle, value: style, range: subrange)
+        }
+
+        mutable.replaceCharacters(in: paragraphRange, with: replacementAttributed)
+        textView.attributedText = mutable
+
+        let newLength = (replacement as NSString).length
+        textView.selectedRange = NSRange(location: paragraphRange.location, length: min(newLength, mutable.length - paragraphRange.location))
+
         textView.delegate?.textViewDidChange?(textView)
     }
 }

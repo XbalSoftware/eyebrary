@@ -604,6 +604,13 @@ private struct ManageEntryDetail: View {
                                 Image(systemName: "list.bullet")
                             }
                             .buttonStyle(.bordered)
+
+                            Button {
+                                richTextCommands.toggleNumberedList()
+                            } label: {
+                                Image(systemName: "list.number")
+                            }
+                            .buttonStyle(.bordered)
                         }
                     }
                 }
