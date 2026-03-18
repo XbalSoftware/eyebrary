@@ -26,6 +26,7 @@ struct LibraryEntry: Identifiable, Codable, Equatable {
 
     var title: String
     var body: String
+    var bodyRTFData: Data? = nil
 
     var category: EntryCategory = .general
     var isFavorite: Bool
@@ -38,13 +39,14 @@ struct LibraryEntry: Identifiable, Codable, Equatable {
     var updatedAt: Date = Date()
 
     enum CodingKeys: String, CodingKey {
-        case id, title, body, assessment, plan, category, defaultStyle, isFavorite, isPinned, isVisible, order, createdAt, updatedAt, level
+        case id, title, body, bodyRTFData, assessment, plan, category, defaultStyle, isFavorite, isPinned, isVisible, order, createdAt, updatedAt, level
     }
 
     init(
         id: UUID = UUID(),
         title: String,
         body: String,
+        bodyRTFData: Data? = nil,
         category: EntryCategory = .general,
         isFavorite: Bool,
         isVisible: Bool = true,
@@ -55,6 +57,7 @@ struct LibraryEntry: Identifiable, Codable, Equatable {
         self.id = id
         self.title = title
         self.body = body
+        self.bodyRTFData = bodyRTFData
         self.category = category
         self.isFavorite = isFavorite
         self.isVisible = isVisible
@@ -82,6 +85,8 @@ struct LibraryEntry: Identifiable, Codable, Equatable {
             self.body = decodedPlan
         }
 
+        self.bodyRTFData = try c.decodeIfPresent(Data.self, forKey: .bodyRTFData)
+
         _ = try? c.decode(LegacyTemplateLevel.self, forKey: .level)
         self.category = (try? c.decode(EntryCategory.self, forKey: .category)) ?? .general
         _ = try? c.decode(String.self, forKey: .defaultStyle)
@@ -98,12 +103,30 @@ struct LibraryEntry: Identifiable, Codable, Equatable {
         try c.encode(id, forKey: .id)
         try c.encode(title, forKey: .title)
         try c.encode(body, forKey: .body)
+        try c.encodeIfPresent(bodyRTFData, forKey: .bodyRTFData)
         try c.encode(category, forKey: .category)
         try c.encode(isFavorite, forKey: .isFavorite)
         try c.encode(isVisible, forKey: .isVisible)
         try c.encodeIfPresent(order, forKey: .order)
         try c.encode(createdAt, forKey: .createdAt)
         try c.encode(updatedAt, forKey: .updatedAt)
+    }
+}
+
+extension LibraryEntry {
+    var attributedBody: NSAttributedString {
+        if let bodyRTFData,
+           let attributed = try? NSAttributedString.eyeBrary_fromRTFData(bodyRTFData) {
+            return attributed
+        }
+
+        return NSAttributedString(string: body)
+    }
+
+    mutating func setAttributedBody(_ attributed: NSAttributedString) {
+        body = attributed.string
+        bodyRTFData = try? attributed.eyeBrary_toRTFData()
+        updatedAt = Date()
     }
 }
 
@@ -201,6 +224,29 @@ struct LetterheadState: Codable, Equatable {
     var selectedLetterheadName: String?
 }
 
+struct EyeBraryLibraryManifest: Codable, Equatable {
+    var format: String
+    var formatVersion: Int
+    var libraryName: String
+    var exportedAt: Date
+    var entries: [EyeBraryLibraryManifestEntry]
+
+    static let currentFormat = "eyebrarylib"
+    static let currentFormatVersion = 1
+}
+
+struct EyeBraryLibraryManifestEntry: Codable, Equatable {
+    var id: UUID
+    var title: String
+    var category: EntryCategory
+    var isFavorite: Bool
+    var isVisible: Bool
+    var order: Int?
+    var createdAt: Date
+    var updatedAt: Date
+    var contentFile: String
+}
+
 extension JSONEncoder {
     static var standard: JSONEncoder {
         let enc = JSONEncoder()
@@ -254,6 +300,8 @@ final class AppStore: ObservableObject {
     private let plansKey = "EYEbrary.savedPlans.v1"
     private let letterheadsKey = "EYEbrary.letterheads.v1"
     private let launchAcknowledgementKey = "EYEbrary.hasAcknowledgedAppInformation.v1"
+    private let bundledDefaultLibraryName = "Default Library"
+    private let bundledDefaultLibraryExtension = "eyebrarylib"
 
     init() {
         loadCategories()
@@ -360,6 +408,93 @@ final class AppStore: ObservableObject {
 
     func exportLibraryJSON() throws -> Data {
         try JSONEncoder.pretty.encode(entries)
+    }
+
+    func exportEyeBraryLibraryPackage(to packageURL: URL, libraryName: String = "EYEbrary Library") throws {
+        let fm = FileManager.default
+
+        if fm.fileExists(atPath: packageURL.path) {
+            try fm.removeItem(at: packageURL)
+        }
+        try fm.createDirectory(at: packageURL, withIntermediateDirectories: true)
+
+        let entriesDirectoryURL = packageURL.appendingPathComponent("Entries", isDirectory: true)
+        try fm.createDirectory(at: entriesDirectoryURL, withIntermediateDirectories: true)
+
+        let manifestEntries: [EyeBraryLibraryManifestEntry] = try entries.map { entry in
+            let filename = "\(entry.id.uuidString).rtf"
+            let relativePath = "Entries/\(filename)"
+            let fileURL = entriesDirectoryURL.appendingPathComponent(filename)
+
+            let rtfData: Data
+            if let storedRTF = entry.bodyRTFData {
+                rtfData = storedRTF
+            } else {
+                let attributed = NSAttributedString(string: entry.body)
+                rtfData = try attributed.data(
+                    from: NSRange(location: 0, length: attributed.length),
+                    documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
+                )
+            }
+            try rtfData.write(to: fileURL, options: .atomic)
+
+            return EyeBraryLibraryManifestEntry(
+                id: entry.id,
+                title: entry.title,
+                category: entry.category,
+                isFavorite: entry.isFavorite,
+                isVisible: entry.isVisible,
+                order: entry.order,
+                createdAt: entry.createdAt,
+                updatedAt: entry.updatedAt,
+                contentFile: relativePath
+            )
+        }
+
+        let manifest = EyeBraryLibraryManifest(
+            format: EyeBraryLibraryManifest.currentFormat,
+            formatVersion: EyeBraryLibraryManifest.currentFormatVersion,
+            libraryName: libraryName,
+            exportedAt: Date(),
+            entries: manifestEntries
+        )
+
+        let manifestData = try JSONEncoder.pretty.encode(manifest)
+        let manifestURL = packageURL.appendingPathComponent("manifest.json")
+        try manifestData.write(to: manifestURL, options: .atomic)
+    }
+
+    func makeTemporaryEyeBraryLibraryPackage(libraryName: String = "EYEbrary Library") throws -> URL {
+        let packageURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(libraryName)
+            .appendingPathExtension("eyebrarylib")
+
+        try exportEyeBraryLibraryPackage(to: packageURL, libraryName: libraryName)
+        return packageURL
+    }
+
+    func importEyeBraryLibraryPackage(from packageURL: URL, merge: Bool) throws {
+        let imported = try importEntriesFromEyeBraryLibraryPackage(at: packageURL)
+
+        if merge {
+            var map = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0) })
+            for entry in imported {
+                map[entry.id] = entry
+            }
+            let sorted = Array(map.values).sorted { $0.updatedAt > $1.updatedAt }
+            entries = sorted.enumerated().map { index, entry in
+                var copy = entry
+                copy.order = index
+                return copy
+            }
+        } else {
+            let sorted = imported.sorted { $0.updatedAt > $1.updatedAt }
+            entries = sorted.enumerated().map { index, entry in
+                var copy = entry
+                copy.order = index
+                return copy
+            }
+        }
     }
 
     func importLibraryJSON(_ data: Data, merge: Bool) throws {
@@ -544,12 +679,64 @@ final class AppStore: ObservableObject {
 
     // MARK: - Defaults / Reset
 
+    private func loadBundledDefaultLibraryIfAvailable() -> [LibraryEntry]? {
+        guard let packageURL = Bundle.main.url(
+            forResource: bundledDefaultLibraryName,
+            withExtension: bundledDefaultLibraryExtension
+        ) else {
+            return nil
+        }
+
+        do {
+            return try importEntriesFromEyeBraryLibraryPackage(at: packageURL)
+        } catch {
+            return nil
+        }
+    }
+
+    private func importEntriesFromEyeBraryLibraryPackage(at packageURL: URL) throws -> [LibraryEntry] {
+        let manifestURL = packageURL.appendingPathComponent("manifest.json")
+        let manifestData = try Data(contentsOf: manifestURL)
+        let manifest = try JSONDecoder.standard.decode(EyeBraryLibraryManifest.self, from: manifestData)
+
+        guard manifest.format == EyeBraryLibraryManifest.currentFormat,
+              manifest.formatVersion == EyeBraryLibraryManifest.currentFormatVersion else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+
+        let importedEntries: [LibraryEntry] = try manifest.entries.map { item in
+            let contentURL = packageURL.appendingPathComponent(item.contentFile)
+            let rtfData = try Data(contentsOf: contentURL)
+
+            let attributed = try NSAttributedString(
+                data: rtfData,
+                options: [.documentType: NSAttributedString.DocumentType.rtf],
+                documentAttributes: nil
+            )
+
+            return LibraryEntry(
+                id: item.id,
+                title: item.title,
+                body: attributed.string,
+                bodyRTFData: rtfData,
+                category: item.category,
+                isFavorite: item.isFavorite,
+                isVisible: item.isVisible,
+                order: item.order,
+                createdAt: item.createdAt,
+                updatedAt: item.updatedAt
+            )
+        }
+
+        return normalizeImportedEntries(importedEntries)
+    }
+
     private func seedDefaults() {
-        entries = factoryDefaultTemplates()
+        entries = loadBundledDefaultLibraryIfAvailable() ?? factoryDefaultTemplates()
     }
 
     func resetToFactoryDefaults() {
-        entries = factoryDefaultTemplates()
+        entries = loadBundledDefaultLibraryIfAvailable() ?? factoryDefaultTemplates()
         categories = defaultCategories()
         plans = []
         letterheads = []

@@ -30,9 +30,16 @@ private enum ActiveImportKind {
     case letterhead
 }
 
+private extension UTType {
+    static var eyeBraryLibraryPackage: UTType {
+        UTType(exportedAs: "com.xbalsoftware.eyebrary.library", conformingTo: .package)
+    }
+}
+
 struct SettingsView: View {
     @EnvironmentObject private var store: AppStore
     @State private var importErrorMessage: String?
+    @State private var importInProgress = false
     @State private var showResetConfirm = false
     @State private var resetSuccessMessage: String?
     @State private var pendingImportMode: TemplateImportMode?
@@ -72,6 +79,15 @@ struct SettingsView: View {
             Section("Library") {
                 Button("Import Library") {
                     showImportModeDialog = true
+                }
+                .disabled(importInProgress)
+
+                if importInProgress {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                        Text("Importing library…")
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Button("Export Library") {
@@ -119,7 +135,7 @@ struct SettingsView: View {
                 get: { activeImportKind != nil },
                 set: { if !$0 { activeImportKind = nil } }
             ),
-            allowedContentTypes: activeImportKind == .letterhead ? [.pdf] : [.json],
+            allowedContentTypes: activeImportKind == .letterhead ? [.pdf] : [.json, .eyeBraryLibraryPackage],
             allowsMultipleSelection: false
         ) { result in
             let importKind = pendingImportKind
@@ -130,30 +146,51 @@ struct SettingsView: View {
                 guard let url = urls.first else { return }
 
                 let didStartAccessing = url.startAccessingSecurityScopedResource()
-                defer {
-                    if didStartAccessing {
-                        url.stopAccessingSecurityScopedResource()
-                    }
-                }
 
                 switch importKind {
                 case .library:
-                    try handleLibraryImport(from: url)
+                    importInProgress = true
+                    Task {
+                        defer {
+                            if didStartAccessing {
+                                url.stopAccessingSecurityScopedResource()
+                            }
+                        }
+                        do {
+                            try await handleLibraryImport(from: url)
+                        } catch {
+                            await MainActor.run {
+                                importErrorMessage = error.localizedDescription
+                                pendingImportKind = nil
+                                pendingImportMode = nil
+                            }
+                        }
+                        await MainActor.run {
+                            importInProgress = false
+                        }
+                    }
 
                 case .letterhead:
+                    defer {
+                        if didStartAccessing {
+                            url.stopAccessingSecurityScopedResource()
+                        }
+                    }
                     try store.addLetterhead(from: url)
                     pendingImportKind = nil
 
                 case nil:
+                    if didStartAccessing {
+                        url.stopAccessingSecurityScopedResource()
+                    }
                     break
                 }
             } catch {
                 DispatchQueue.main.async {
                     importErrorMessage = error.localizedDescription
                     pendingImportKind = nil
-                    if importKind == .library {
-                        pendingImportMode = nil
-                    }
+                    pendingImportMode = nil
+                    importInProgress = false
                 }
             }
         }
@@ -198,9 +235,38 @@ struct SettingsView: View {
         }
     }
 
-    private func handleLibraryImport(from url: URL) throws {
-        let data = try Data(contentsOf: url)
+    private func handleLibraryImport(from url: URL) async throws {
         let mode = pendingImportMode ?? .merge
+
+        if url.pathExtension.lowercased() == "eyebrarylib" {
+            let manifestURL = url.appendingPathComponent("manifest.json")
+            let manifestData = try Data(contentsOf: manifestURL)
+            let manifest = try JSONDecoder.standard.decode(EyeBraryLibraryManifest.self, from: manifestData)
+            let importedCount = manifest.entries.count
+            let incomingIDs = Set(manifest.entries.map { $0.id })
+            let existingIDs = Set(store.entries.map { $0.id })
+            let addedCount = incomingIDs.subtracting(existingIDs).count
+            let updatedCount = incomingIDs.intersection(existingIDs).count
+
+            try await store.importEyeBraryLibraryPackage(from: url, merge: mode == .merge)
+
+            let successMessage: String
+            switch mode {
+            case .merge:
+                successMessage = "Merged \(importedCount) entr\(importedCount == 1 ? "y" : "ies"): \(addedCount) added, \(updatedCount) updated."
+            case .replace:
+                successMessage = "Replaced the current library with \(importedCount) entr\(importedCount == 1 ? "y" : "ies") from the selected package."
+            }
+
+            DispatchQueue.main.async {
+                importSuccessMessage = successMessage
+                pendingImportKind = nil
+                pendingImportMode = nil
+            }
+            return
+        }
+
+        let data = try Data(contentsOf: url)
         let importedEntries = try JSONDecoder.standard.decode([LibraryEntry].self, from: data)
 
         let existingIDs = Set(store.entries.map { $0.id })
@@ -227,9 +293,7 @@ struct SettingsView: View {
 
     private func exportTemplates() {
         do {
-            let data = try store.exportLibraryJSON()
-            let url = FileManager.default.temporaryDirectory.appendingPathComponent("EYEbrary Library.json")
-            try data.write(to: url, options: .atomic)
+            let url = try store.makeTemporaryEyeBraryLibraryPackage(libraryName: "EYEbrary Library")
             let av = UIActivityViewController(activityItems: [url], applicationActivities: nil)
             if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
                let controller = scene.windows.first?.rootViewController {

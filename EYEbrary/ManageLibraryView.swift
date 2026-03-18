@@ -19,10 +19,12 @@ struct ManageLibraryView: View {
     @State private var selectedID: UUID? = nil
     @State private var pendingDeleteEntryID: UUID? = nil
     @State private var showDeleteEntryConfirm: Bool = false
-    @State private var showCreateEntrySheet: Bool = false
     @State private var detailIsEditing: Bool = false
     @State private var detailHasUnsavedChanges: Bool = false
     @State private var pendingSelectionID: UUID? = nil
+    @State private var pendingCreateNewEntry: Bool = false
+    @State private var autoStartEditingEntryID: UUID? = nil
+    @State private var draftNewEntryID: UUID? = nil
     @State private var showDiscardChangesAlert: Bool = false
 
     private var filtered: [LibraryEntry] {
@@ -98,22 +100,33 @@ struct ManageLibraryView: View {
         }
         .alert("Discard unsaved changes?", isPresented: $showDiscardChangesAlert) {
             Button("Discard Changes", role: .destructive) {
-                if let pending = pendingSelectionID {
+                let currentDraftID = draftNewEntryID
+
+                if let draftID = currentDraftID {
+                    store.entries.removeAll { $0.id == draftID }
+                    if selectedID == draftID {
+                        selectedID = nil
+                    }
+                    draftNewEntryID = nil
+                    autoStartEditingEntryID = nil
+                }
+
+                if pendingCreateNewEntry {
+                    createNewEntryAndStartEditing()
+                } else if let pending = pendingSelectionID {
                     selectedID = pending
                 }
                 pendingSelectionID = nil
+                pendingCreateNewEntry = false
                 detailIsEditing = false
                 detailHasUnsavedChanges = false
             }
             Button("Cancel", role: .cancel) {
                 pendingSelectionID = nil
+                pendingCreateNewEntry = false
             }
         } message: {
             Text("Any unsaved changes will be lost if you leave this entry without saving.")
-        }
-        .sheet(isPresented: $showCreateEntrySheet) {
-            EntryEditorSheet(mode: .create)
-                .environmentObject(store)
         }
     }
 
@@ -165,7 +178,13 @@ struct ManageLibraryView: View {
             Spacer()
 
             Button {
-                showCreateEntrySheet = true
+                if detailIsEditing && detailHasUnsavedChanges {
+                    pendingSelectionID = nil
+                    pendingCreateNewEntry = true
+                    showDiscardChangesAlert = true
+                } else {
+                    createNewEntryAndStartEditing()
+                }
             } label: {
                 Label("New Entry", systemImage: "plus")
                     .labelStyle(.iconOnly)
@@ -304,7 +323,7 @@ struct ManageLibraryView: View {
     @ViewBuilder
     private func manageEntryRow(_ t: LibraryEntry) -> some View {
         HStack(spacing: 10) {
-            Text(t.title)
+            Text(t.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Untitled Entry" : t.title)
                 .font(.subheadline)
                 .lineLimit(2)
                 .layoutPriority(1)
@@ -329,7 +348,7 @@ struct ManageLibraryView: View {
         .onTapGesture {
             guard selectedID != t.id else { return }
 
-            if detailIsEditing && detailHasUnsavedChanges {
+            if detailIsEditing && (detailHasUnsavedChanges || draftNewEntryID != nil) {
                 pendingSelectionID = t.id
                 showDiscardChangesAlert = true
             } else {
@@ -357,6 +376,8 @@ struct ManageLibraryView: View {
                     selectedID: $selectedID,
                     isEditingExternal: $detailIsEditing,
                     hasUnsavedChangesExternal: $detailHasUnsavedChanges,
+                    autoStartEditingEntryID: $autoStartEditingEntryID,
+                    draftNewEntryID: $draftNewEntryID,
                     entry: t
                 )
             } else {
@@ -369,6 +390,25 @@ struct ManageLibraryView: View {
         }
     }
 
+    private func createNewEntryAndStartEditing() {
+        let newID = UUID()
+        let entry = LibraryEntry(
+            id: newID,
+            title: "",
+            body: "",
+            category: .general,
+            isFavorite: false,
+            isVisible: true,
+            order: ((store.entries.compactMap { $0.order }.min() ?? 0) - 1),
+            createdAt: Date(),
+            updatedAt: Date()
+        )
+        store.addEntry(entry)
+        selectedID = newID
+        autoStartEditingEntryID = newID
+        draftNewEntryID = newID
+        pendingCreateNewEntry = false
+    }
     // removed createNewTemplate()
 
     private func changeCategory(for ids: [UUID], to newCategory: EntryCategory) {
@@ -385,12 +425,14 @@ private struct ManageEntryDetail: View {
     @Binding var selectedID: UUID?
     @Binding var isEditingExternal: Bool
     @Binding var hasUnsavedChangesExternal: Bool
+    @Binding var autoStartEditingEntryID: UUID?
+    @Binding var draftNewEntryID: UUID?
     @State private var showDeleteConfirm: Bool = false
 
     let entry: LibraryEntry
 
     @State private var title: String = ""
-    @State private var bodyText: String = ""
+    @State private var bodyAttributed: NSAttributedString = NSAttributedString(string: "")
     @State private var category: EntryCategory = .general
     @State private var isFavorite: Bool = false
     @State private var isVisible: Bool = true
@@ -400,18 +442,31 @@ private struct ManageEntryDetail: View {
     @State private var isEditing: Bool = false
 
     @State private var originalTitle: String = ""
-    @State private var originalBodyText: String = ""
+    @State private var originalBodyAttributed: NSAttributedString = NSAttributedString(string: "")
     @State private var originalCategory: EntryCategory = .general
     @State private var originalIsFavorite: Bool = false
     @State private var originalIsVisible: Bool = true
+
+    @StateObject private var richTextCommands = RichTextEditorCommands()
 
     private var bodyFieldLabel: String {
         "Entry Content"
     }
 
     private var hasUnsavedChanges: Bool {
-        title != originalTitle
-            || bodyText != originalBodyText
+        let currentRTF = (try? bodyAttributed.eyeBrary_toRTFData()) ?? Data()
+        let originalRTF = (try? originalBodyAttributed.eyeBrary_toRTFData()) ?? Data()
+
+        return title != originalTitle
+            || currentRTF != originalRTF
+    }
+
+    private var canSaveEntry: Bool {
+        !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var isDraftNewEntry: Bool {
+        draftNewEntryID == entry.id
     }
 
     var body: some View {
@@ -432,12 +487,25 @@ private struct ManageEntryDetail: View {
                         hasUnsavedChangesExternal = false
                     }
                     .buttonStyle(.bordered)
+                    .disabled(!canSaveEntry)
 
                     Button("Cancel") {
-                        discardEdits()
-                        isEditing = false
-                        isEditingExternal = false
-                        hasUnsavedChangesExternal = false
+                        if isDraftNewEntry {
+                            store.entries.removeAll { $0.id == entry.id }
+                            if selectedID == entry.id {
+                                selectedID = nil
+                            }
+                            draftNewEntryID = nil
+                            autoStartEditingEntryID = nil
+                            isEditing = false
+                            isEditingExternal = false
+                            hasUnsavedChangesExternal = false
+                        } else {
+                            discardEdits()
+                            isEditing = false
+                            isEditingExternal = false
+                            hasUnsavedChangesExternal = false
+                        }
                     }
                     .buttonStyle(.bordered)
                 } else {
@@ -493,11 +561,59 @@ private struct ManageEntryDetail: View {
             .padding(.horizontal)
 
             VStack(alignment: .leading, spacing: 6) {
-                Text(bodyFieldLabel)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                TextEditor(text: $bodyText)
-                    .disabled(!isEditing)
+                HStack {
+                    Text(bodyFieldLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Spacer()
+
+                    if isEditing {
+                        HStack(spacing: 8) {
+                            Button {
+                                richTextCommands.toggleBold()
+                            } label: {
+                                Image(systemName: "bold")
+                            }
+                            .buttonStyle(.bordered)
+
+                            Button {
+                                richTextCommands.toggleUnderline()
+                            } label: {
+                                Image(systemName: "underline")
+                            }
+                            .buttonStyle(.bordered)
+
+                            Button {
+                                richTextCommands.indent()
+                            } label: {
+                                Image(systemName: "increase.indent")
+                            }
+                            .buttonStyle(.bordered)
+
+                            Button {
+                                richTextCommands.outdent()
+                            } label: {
+                                Image(systemName: "decrease.indent")
+                            }
+                            .buttonStyle(.bordered)
+
+                            Button {
+                                richTextCommands.toggleBullets()
+                            } label: {
+                                Image(systemName: "list.bullet")
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                }
+
+                RichTextEditor(
+                    attributedText: $bodyAttributed,
+                    isEditable: isEditing,
+                    font: .preferredFont(forTextStyle: .title3),
+                    commands: richTextCommands
+                )
                     .frame(minHeight: 260)
                     .overlay(
                         RoundedRectangle(cornerRadius: 8)
@@ -506,23 +622,22 @@ private struct ManageEntryDetail: View {
             }
             .padding(.horizontal)
 
-            Spacer()
-
             if isEditing {
                 HStack {
                     Spacer()
 
-            Button(role: .destructive) {
-                showDeleteConfirm = true
-            } label: {
-                Label("Delete Entry", systemImage: "trash")
-                    .font(.subheadline)
-            }
-            .buttonStyle(.bordered)
+                    Button(role: .destructive) {
+                        showDeleteConfirm = true
+                    } label: {
+                        Label("Delete Entry", systemImage: "trash")
+                            .font(.subheadline)
+                    }
+                    .buttonStyle(.bordered)
                 }
                 .padding(.horizontal)
-                .padding(.bottom, 12)
             }
+
+            Spacer()
         }
         .alert("Delete entry?", isPresented: $showDeleteConfirm) {
             Button("Delete", role: .destructive) {
@@ -540,6 +655,7 @@ private struct ManageEntryDetail: View {
             isEditing = false
             isEditingExternal = false
             hasUnsavedChangesExternal = false
+            startEditingIfRequested()
         }
         .onChange(of: entry.id) { _, _ in
             didLoad = false
@@ -547,6 +663,7 @@ private struct ManageEntryDetail: View {
             isEditingExternal = false
             hasUnsavedChangesExternal = false
             loadIfNeeded()
+            startEditingIfRequested()
         }
         .onChange(of: isEditing) { _, newValue in
             isEditingExternal = newValue
@@ -561,7 +678,7 @@ private struct ManageEntryDetail: View {
                 hasUnsavedChangesExternal = hasUnsavedChanges
             }
         }
-        .onChange(of: bodyText) { _, _ in
+        .onChange(of: bodyAttributed) { _, _ in
             if isEditing {
                 hasUnsavedChangesExternal = hasUnsavedChanges
             }
@@ -576,6 +693,15 @@ private struct ManageEntryDetail: View {
             saveMetadataChangesIfNeeded()
         }
     }
+    private func startEditingIfRequested() {
+        guard autoStartEditingEntryID == entry.id else { return }
+        beginEditing()
+        isEditing = true
+        isEditingExternal = true
+        hasUnsavedChangesExternal = hasUnsavedChanges
+        autoStartEditingEntryID = nil
+    }
+
     private func saveMetadataChangesIfNeeded() {
         guard didLoad else { return }
         guard !isEditing else { return }
@@ -602,7 +728,7 @@ private struct ManageEntryDetail: View {
         didLoad = true
 
         title = entry.title
-        bodyText = entry.body
+        bodyAttributed = entry.attributedBody
         category = entry.category
         originalCategory = entry.category
         isFavorite = entry.isFavorite
@@ -612,20 +738,20 @@ private struct ManageEntryDetail: View {
 
         // Capture originals so Cancel can revert.
         originalTitle = entry.title
-        originalBodyText = entry.body
+        originalBodyAttributed = entry.attributedBody
     }
 
     private func beginEditing() {
         // Refresh originals from the current stored version.
         guard let t = store.entry(id: entry.id) else { return }
         originalTitle = t.title
-        originalBodyText = t.body
+        originalBodyAttributed = t.attributedBody
         originalCategory = t.category
         originalIsFavorite = t.isFavorite
         originalIsVisible = t.isVisible
 
         title = t.title
-        bodyText = t.body
+        bodyAttributed = t.attributedBody
         category = t.category
         isFavorite = t.isFavorite
         isVisible = t.isVisible
@@ -633,7 +759,7 @@ private struct ManageEntryDetail: View {
 
     private func discardEdits() {
         title = originalTitle
-        bodyText = originalBodyText
+        bodyAttributed = originalBodyAttributed
         category = originalCategory
         isFavorite = originalIsFavorite
         isVisible = originalIsVisible
@@ -643,10 +769,11 @@ private struct ManageEntryDetail: View {
 
     private func commitEdits() {
         guard didLoad else { return }
+        guard canSaveEntry else { return }
         guard var t = store.entry(id: entry.id) else { return }
 
-        t.title = title
-        t.body = bodyText
+        t.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        t.setAttributedBody(bodyAttributed)
         t.category = category
         t.isFavorite = isFavorite
         t.isVisible = isVisible
@@ -656,169 +783,15 @@ private struct ManageEntryDetail: View {
 
         // Update originals after saving.
         originalTitle = t.title
-        originalBodyText = t.body
+        originalBodyAttributed = t.attributedBody
         originalCategory = t.category
         originalIsFavorite = t.isFavorite
         originalIsVisible = t.isVisible
+        if draftNewEntryID == t.id {
+            draftNewEntryID = nil
+        }
         isEditingExternal = false
         hasUnsavedChangesExternal = false
     }
 }
 
-private enum EntryEditorMode: Equatable {
-    case create
-    case edit(id: UUID)
-}
-
-private struct EntryEditorSheet: View {
-    @EnvironmentObject private var store: AppStore
-    @Environment(\.dismiss) private var dismiss
-
-    let mode: EntryEditorMode
-
-    @State private var title: String = ""
-    @State private var bodyText: String = ""
-
-    @State private var category: EntryCategory = .general
-    @State private var isFavorite: Bool = false
-    @State private var isVisible: Bool = true
-
-    @State private var loadedID: UUID? = nil
-
-    private var navigationTitle: String {
-        switch mode {
-        case .create:
-            return "New Entry"
-        case .edit:
-            return "Edit Entry"
-        }
-    }
-
-    private var actionTitle: String {
-        switch mode {
-        case .create:
-            return "Create"
-        case .edit:
-            return "Save"
-        }
-    }
-
-    private var canSave: Bool {
-        !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-        !bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section("Entry") {
-                    TextField("Entry title", text: $title)
-                        .textInputAutocapitalization(.characters)
-                        .autocorrectionDisabled(true)
-
-                    Picker("Category", selection: $category) {
-                        let cats = store.categories.sorted { $0.order < $1.order }
-                        ForEach(cats) { item in
-                            Text(item.name).tag(item.id.isEmpty ? EntryCategory.general : item.id)
-                        }
-                    }
-
-                    Toggle("Favorite", isOn: $isFavorite)
-                    Toggle("Visible in New Report", isOn: $isVisible)
-                }
-
-                Section {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Entry Content")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        TextEditor(text: $bodyText)
-                            .frame(minHeight: 260)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .stroke(.secondary.opacity(0.35))
-                            )
-                    }
-                    .padding(.vertical, 4)
-                }
-            }
-            .navigationTitle(navigationTitle)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
-                }
-
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(actionTitle) {
-                        save()
-                    }
-                    .disabled(!canSave)
-                }
-            }
-            .onAppear {
-                loadIfNeeded()
-            }
-        }
-    }
-
-    private func loadIfNeeded() {
-        switch mode {
-        case .create:
-            guard loadedID == nil else { return }
-            loadedID = UUID()
-            title = ""
-            bodyText = ""
-            category = .general
-            isFavorite = false
-            isVisible = true
-
-        case .edit(let id):
-            guard loadedID != id else { return }
-            guard let entry = store.entry(id: id) else { return }
-            loadedID = id
-            title = entry.title
-            bodyText = entry.body
-            category = entry.category
-            isFavorite = entry.isFavorite
-            isVisible = entry.isVisible
-            // defaultStyle = entry.defaultStyle
-        }
-    }
-
-    private func save() {
-        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedBody = bodyText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedTitle.isEmpty, !trimmedBody.isEmpty else { return }
-
-        switch mode {
-        case .create:
-            let entry = LibraryEntry(
-                title: trimmedTitle,
-                body: trimmedBody,
-                category: category,
-                // defaultStyle: defaultStyle,
-                isFavorite: isFavorite,
-                isVisible: isVisible,
-                order: store.nextOrderValue(),
-                createdAt: Date(),
-                updatedAt: Date()
-            )
-            store.addEntry(entry)
-
-        case .edit(let id):
-            guard var existingEntry = store.entry(id: id) else { return }
-            existingEntry.title = trimmedTitle
-            existingEntry.body = trimmedBody
-            existingEntry.category = category
-            existingEntry.isFavorite = isFavorite
-            existingEntry.isVisible = isVisible
-            existingEntry.updatedAt = Date()
-            store.updateEntry(existingEntry)
-        }
-
-        dismiss()
-    }
-}
