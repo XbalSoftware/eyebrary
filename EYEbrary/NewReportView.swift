@@ -40,6 +40,8 @@ struct NewReportView: View {
     @State private var showHistorySheet: Bool = false
     @State private var collapsedSelectedEntries: Bool = false
     @State private var expandedEntryIDs: Set<UUID> = []
+    @State private var richTextCommandsByEntryID: [UUID: RichTextEditorCommands] = [:]
+    @State private var pendingScrollEntryID: UUID? = nil
 
     private var filteredEntries: [LibraryEntry] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -384,42 +386,100 @@ struct NewReportView: View {
                 .padding(.horizontal)
                 .padding(.top, -2)
 
-                List {
-                    Section {
-                        ForEach($planEntries) { $entry in
-                            VStack(alignment: .leading, spacing: 12) {
-                                HStack(alignment: .top) {
-                                    TextField("ENTER TITLE", text: $entry.title)
-                                        .textFieldStyle(.plain)
-                                        .font(.headline)
-                                        .textInputAutocapitalization(.characters)
-                                        .autocorrectionDisabled(true)
+                ScrollViewReader { proxy in
+                    List {
+                        Section {
+                            ForEach($planEntries) { $entry in
+                                VStack(alignment: .leading, spacing: 12) {
+                                    HStack(alignment: .top) {
+                                        TextField("ENTER TITLE", text: $entry.title)
+                                            .textFieldStyle(.plain)
+                                            .font(.headline)
+                                            .textInputAutocapitalization(.characters)
+                                            .autocorrectionDisabled(true)
 
-                                    Spacer()
-                                    Button {
-                                        requestDelete(entryID: entry.id)
-                                    } label: {
-                                        Image(systemName: "xmark.circle.fill")
-                                            .foregroundStyle(.secondary)
+                                        Spacer()
+                                        Button {
+                                            requestDelete(entryID: entry.id)
+                                        } label: {
+                                            Image(systemName: "xmark.circle.fill")
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        .buttonStyle(.plain)
                                     }
-                                    .buttonStyle(.plain)
-                                }
 
-                                if !collapsedSelectedEntries {
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        Text("Content")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                        RichTextEditor(
-                                            attributedText: Binding(
-                                                get: { entry.attributedBody },
-                                                set: { newValue in
-                                                    entry.setAttributedBody(newValue)
+                                    if !collapsedSelectedEntries {
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            HStack {
+                                                Text("Content")
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary)
+
+                                                Spacer()
+
+                                                HStack(spacing: 8) {
+                                                    Button {
+                                                        richTextCommands(for: entry.id).toggleBold()
+                                                    } label: {
+                                                        Image(systemName: "bold")
+                                                    }
+                                                    .buttonStyle(.bordered)
+
+                                                    Button {
+                                                        richTextCommands(for: entry.id).toggleUnderline()
+                                                    } label: {
+                                                        Image(systemName: "underline")
+                                                    }
+                                                    .buttonStyle(.bordered)
+
+                                                    Button {
+                                                        richTextCommands(for: entry.id).indent()
+                                                    } label: {
+                                                        Image(systemName: "increase.indent")
+                                                    }
+                                                    .buttonStyle(.bordered)
+
+                                                    Button {
+                                                        richTextCommands(for: entry.id).outdent()
+                                                    } label: {
+                                                        Image(systemName: "decrease.indent")
+                                                    }
+                                                    .buttonStyle(.bordered)
+
+                                                    Button {
+                                                        richTextCommands(for: entry.id).toggleBullets()
+                                                    } label: {
+                                                        Image(systemName: "list.bullet")
+                                                    }
+                                                    .buttonStyle(.bordered)
+
+                                                    Button {
+                                                        richTextCommands(for: entry.id).toggleNumberedList()
+                                                    } label: {
+                                                        Image(systemName: "list.number")
+                                                    }
+                                                    .buttonStyle(.bordered)
+
+                                                    Button {
+                                                        richTextCommands(for: entry.id).normalizeFormatting()
+                                                    } label: {
+                                                        Image(systemName: "textformat")
+                                                    }
+                                                    .buttonStyle(.bordered)
                                                 }
-                                            ),
-                                            isEditable: true,
-                                            font: .preferredFont(forTextStyle: .title3)
-                                        )
+                                            }
+
+                                            RichTextEditor(
+                                                attributedText: Binding(
+                                                    get: { entry.attributedBody },
+                                                    set: { newValue in
+                                                        entry.setAttributedBody(newValue)
+                                                    }
+                                                ),
+                                                isEditable: true,
+                                                font: .preferredFont(forTextStyle: .title3),
+                                                commands: richTextCommands(for: entry.id)
+                                            )
                                             .frame(minHeight: expandedEntryIDs.contains(entry.id) ? 420 : 180)
                                             .contentShape(Rectangle())
                                             .onTapGesture(count: 2) {
@@ -427,6 +487,11 @@ struct NewReportView: View {
                                                     expandedEntryIDs.remove(entry.id)
                                                 } else {
                                                     expandedEntryIDs.insert(entry.id)
+                                                    DispatchQueue.main.async {
+                                                        withAnimation(.easeInOut(duration: 0.2)) {
+                                                            proxy.scrollTo(entry.id, anchor: .top)
+                                                        }
+                                                    }
                                                 }
                                             }
                                             .background(
@@ -437,19 +502,29 @@ struct NewReportView: View {
                                                 RoundedRectangle(cornerRadius: 8)
                                                     .stroke(.secondary.opacity(0.35))
                                             )
+                                        }
                                     }
                                 }
+                                .padding(.vertical, 8)
+                                .id(entry.id)
                             }
-                            .padding(.vertical, 8)
+                            .onMove { from, to in
+                                planEntries.move(fromOffsets: from, toOffset: to)
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            }
                         }
-                        .onMove { from, to in
-                            planEntries.move(fromOffsets: from, toOffset: to)
-                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    }
+                    .environment(\.editMode, .constant(.active))
+                    .onChange(of: pendingScrollEntryID) { _, newValue in
+                        guard let entryID = newValue else { return }
+                        DispatchQueue.main.async {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                proxy.scrollTo(entryID, anchor: .top)
+                            }
+                            pendingScrollEntryID = nil
                         }
                     }
                 }
-                // Keep reorder handles visible without a separate Edit button
-                .environment(\.editMode, .constant(.active))
             }
 
             HStack(spacing: 12) {
@@ -508,13 +583,23 @@ struct NewReportView: View {
         }
         .padding(.top, -56)
     }
+    private func richTextCommands(for entryID: UUID) -> RichTextEditorCommands {
+        if let existing = richTextCommandsByEntryID[entryID] {
+            return existing
+        }
+        let created = RichTextEditorCommands()
+        richTextCommandsByEntryID[entryID] = created
+        return created
+    }
+
     private func addToPlan(templateID: UUID) {
         guard let t = store.entry(id: templateID) else { return }
         if planEntries.contains(where: { $0.templateID == templateID }) { return }
 
+        let newID = UUID()
         planEntries.append(
             PlanEntry(
-                id: UUID(),
+                id: newID,
                 templateID: templateID,
                 title: t.title,
                 originalTitle: t.title,
@@ -524,6 +609,7 @@ struct NewReportView: View {
                 originalBodyRTFData: t.bodyRTFData
             )
         )
+        pendingScrollEntryID = newID
     }
     private func isEntrySelected(_ entryID: UUID) -> Bool {
         planEntries.contains(where: { $0.templateID == entryID })
@@ -539,9 +625,10 @@ struct NewReportView: View {
         }
     }
     private func addOtherEntry() {
+        let newID = UUID()
         planEntries.insert(
             PlanEntry(
-                id: UUID(),
+                id: newID,
                 templateID: nil,
                 title: "",
                 originalTitle: "",
@@ -552,6 +639,7 @@ struct NewReportView: View {
             ),
             at: 0
         )
+        pendingScrollEntryID = newID
     }
     private func needsDeleteWarning(for entry: PlanEntry) -> Bool {
         if entry.templateID == nil {
@@ -579,6 +667,7 @@ struct NewReportView: View {
     private func deleteEntryNow(id: UUID) {
         planEntries.removeAll { $0.id == id }
         expandedEntryIDs.remove(id)
+        richTextCommandsByEntryID.removeValue(forKey: id)
     }
 
     private func clearForm() {
@@ -591,6 +680,7 @@ struct NewReportView: View {
         reportDate = Date()
         planEntries = []
         expandedEntryIDs.removeAll()
+        richTextCommandsByEntryID.removeAll()
         selectedEntryID = nil
     }
 

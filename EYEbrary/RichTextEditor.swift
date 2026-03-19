@@ -119,7 +119,7 @@ struct RichTextEditor: UIViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(storage: storage)
+        Coordinator(storage: storage, commands: commands)
     }
 
     func makeUIView(context: Context) -> UITextView {
@@ -127,36 +127,49 @@ struct RichTextEditor: UIViewRepresentable {
         textView.delegate = context.coordinator
         configure(textView)
         applyCurrentValue(to: textView, preserveSelection: false)
-        commands?.textView = textView
         return textView
     }
 
     func updateUIView(_ uiView: UITextView, context: Context) {
         configure(uiView)
+        context.coordinator.storage = storage
+        context.coordinator.commands = commands
 
         // Avoid resetting attributed text while the user is actively typing,
         // which can cause cursor jumps and misplaced insertion.
         if !uiView.isFirstResponder {
             applyCurrentValue(to: uiView, preserveSelection: true)
         }
-
-        commands?.textView = uiView
     }
 
     private func configure(_ textView: UITextView) {
         textView.isEditable = isEditable
         textView.isScrollEnabled = !autoExpandHeight
         textView.backgroundColor = backgroundColor
-        textView.textColor = textColor
-        textView.font = font
         textView.adjustsFontForContentSizeCategory = true
         textView.textContainerInset = UIEdgeInsets(top: 8, left: 4, bottom: 8, right: 4)
         textView.textContainer.lineFragmentPadding = 0
         textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        textView.typingAttributes = [
-            .font: font,
-            .foregroundColor: textColor
-        ]
+
+        switch storage {
+        case .plain:
+            textView.textColor = textColor
+            textView.font = font
+            textView.typingAttributes = [
+                .font: font,
+                .foregroundColor: textColor
+            ]
+
+        case .attributed:
+            // Do not overwrite the live attributed editing state on every update.
+            // Only provide fallback typing attributes when the editor is empty.
+            if textView.attributedText.length == 0 {
+                textView.typingAttributes = [
+                    .font: font,
+                    .foregroundColor: textColor
+                ]
+            }
+        }
     }
 
     private func currentAttributedValue() -> NSAttributedString {
@@ -209,10 +222,22 @@ struct RichTextEditor: UIViewRepresentable {
     }
 
     final class Coordinator: NSObject, UITextViewDelegate {
-        private let storage: Storage
+        fileprivate var storage: Storage
+        fileprivate weak var commands: RichTextEditorCommands?
 
-        fileprivate init(storage: Storage) {
+        fileprivate init(storage: Storage, commands: RichTextEditorCommands?) {
             self.storage = storage
+            self.commands = commands
+        }
+
+        func textViewDidBeginEditing(_ textView: UITextView) {
+            commands?.textView = textView
+        }
+
+        func textViewDidEndEditing(_ textView: UITextView) {
+            if commands?.textView === textView {
+                commands?.textView = nil
+            }
         }
 
         func textViewDidChange(_ textView: UITextView) {
@@ -244,12 +269,21 @@ extension NSAttributedString {
 }
 
 private enum RichTextEditorFormatting {
+    private static func restoreScrollPosition(_ textView: UITextView, to previousOffset: CGPoint) {
+        textView.layoutIfNeeded()
+
+        let maxOffsetY = max(-textView.adjustedContentInset.top,
+                             textView.contentSize.height - textView.bounds.height + textView.adjustedContentInset.bottom)
+        let clampedY = min(max(previousOffset.y, -textView.adjustedContentInset.top), maxOffsetY)
+        textView.setContentOffset(CGPoint(x: previousOffset.x, y: clampedY), animated: false)
+    }
     static func toggleBold(in textView: UITextView) {
         let range = textView.selectedRange
         guard range.location != NSNotFound else { return }
 
         if range.length > 0 {
             let mutable = NSMutableAttributedString(attributedString: textView.attributedText)
+            let previousOffset = textView.contentOffset
             mutable.enumerateAttribute(.font, in: range, options: []) { value, subrange, _ in
                 let currentFont = (value as? UIFont) ?? (textView.typingAttributes[.font] as? UIFont) ?? .preferredFont(forTextStyle: .body)
                 let descriptor = currentFont.fontDescriptor
@@ -263,6 +297,7 @@ private enum RichTextEditorFormatting {
             }
             textView.attributedText = mutable
             textView.selectedRange = range
+            restoreScrollPosition(textView, to: previousOffset)
             textView.delegate?.textViewDidChange?(textView)
         } else {
             let currentFont = (textView.typingAttributes[.font] as? UIFont) ?? textView.font ?? .preferredFont(forTextStyle: .body)
@@ -283,6 +318,7 @@ private enum RichTextEditorFormatting {
 
         if range.length > 0 {
             let mutable = NSMutableAttributedString(attributedString: textView.attributedText)
+            let previousOffset = textView.contentOffset
             mutable.enumerateAttribute(.underlineStyle, in: range, options: []) { value, subrange, _ in
                 let current = (value as? Int) ?? 0
                 let next = current == 0 ? NSUnderlineStyle.single.rawValue : 0
@@ -290,6 +326,7 @@ private enum RichTextEditorFormatting {
             }
             textView.attributedText = mutable
             textView.selectedRange = range
+            restoreScrollPosition(textView, to: previousOffset)
             textView.delegate?.textViewDidChange?(textView)
         } else {
             let current = (textView.typingAttributes[.underlineStyle] as? Int) ?? 0
@@ -350,6 +387,7 @@ private enum RichTextEditorFormatting {
         guard range.location != NSNotFound else { return }
 
         let mutable = NSMutableAttributedString(attributedString: textView.attributedText)
+        let previousOffset = textView.contentOffset
         let paragraphRange = (textView.text as NSString).paragraphRange(for: range)
         mutable.enumerateAttribute(.paragraphStyle, in: paragraphRange, options: []) { value, subrange, _ in
             let style = ((value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
@@ -359,6 +397,7 @@ private enum RichTextEditorFormatting {
         }
         textView.attributedText = mutable
         textView.selectedRange = range
+        restoreScrollPosition(textView, to: previousOffset)
         textView.delegate?.textViewDidChange?(textView)
     }
 
@@ -367,6 +406,7 @@ private enum RichTextEditorFormatting {
         guard range.location != NSNotFound else { return }
 
         let mutable = NSMutableAttributedString(attributedString: textView.attributedText)
+        let previousOffset = textView.contentOffset
         let paragraphRange = (textView.text as NSString).paragraphRange(for: range)
         mutable.enumerateAttribute(.paragraphStyle, in: paragraphRange, options: []) { value, subrange, _ in
             let style = ((value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
@@ -376,6 +416,7 @@ private enum RichTextEditorFormatting {
         }
         textView.attributedText = mutable
         textView.selectedRange = range
+        restoreScrollPosition(textView, to: previousOffset)
         textView.delegate?.textViewDidChange?(textView)
     }
 
@@ -403,6 +444,7 @@ private enum RichTextEditorFormatting {
 
         let replacement = updatedLines.joined(separator: "\n")
         let mutable = NSMutableAttributedString(attributedString: textView.attributedText)
+        let previousOffset = textView.contentOffset
         let replacementAttributed = NSMutableAttributedString(string: replacement, attributes: textView.typingAttributes)
 
         let fullReplacementRange = NSRange(location: 0, length: replacementAttributed.length)
@@ -425,6 +467,7 @@ private enum RichTextEditorFormatting {
         textView.attributedText = mutable
         let newLength = (replacement as NSString).length
         textView.selectedRange = NSRange(location: paragraphRange.location, length: min(newLength, mutable.length - paragraphRange.location))
+        restoreScrollPosition(textView, to: previousOffset)
         textView.delegate?.textViewDidChange?(textView)
     }
 
@@ -456,6 +499,7 @@ private enum RichTextEditorFormatting {
 
         let replacement = updatedLines.joined(separator: "\n")
         let mutable = NSMutableAttributedString(attributedString: textView.attributedText)
+        let previousOffset = textView.contentOffset
         let replacementAttributed = NSMutableAttributedString(string: replacement, attributes: textView.typingAttributes)
 
         let fullReplacementRange = NSRange(location: 0, length: replacementAttributed.length)
@@ -481,6 +525,7 @@ private enum RichTextEditorFormatting {
 
         let newLength = (replacement as NSString).length
         textView.selectedRange = NSRange(location: paragraphRange.location, length: min(newLength, mutable.length - paragraphRange.location))
+        restoreScrollPosition(textView, to: previousOffset)
 
         textView.delegate?.textViewDidChange?(textView)
     }
@@ -490,6 +535,7 @@ private enum RichTextEditorFormatting {
         let baseColor = (textView.typingAttributes[.foregroundColor] as? UIColor) ?? .label
 
         let mutable = NSMutableAttributedString(attributedString: textView.attributedText)
+        let previousOffset = textView.contentOffset
         let fullRange = NSRange(location: 0, length: mutable.length)
         guard fullRange.length > 0 else { return }
 
@@ -515,6 +561,7 @@ private enum RichTextEditorFormatting {
         }
 
         textView.attributedText = mutable
+        restoreScrollPosition(textView, to: previousOffset)
         textView.delegate?.textViewDidChange?(textView)
     }
 }
