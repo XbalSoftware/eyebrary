@@ -44,6 +44,28 @@ final class RichTextEditorCommands: ObservableObject {
         guard let textView else { return }
         RichTextEditorFormatting.toggleNumberedList(in: textView)
     }
+
+    func normalizeFormatting() {
+        guard let textView else { return }
+        RichTextEditorFormatting.normalizeFormatting(in: textView)
+    }
+}
+
+private final class AutoSizingTextView: UITextView {
+    override var contentSize: CGSize {
+        didSet {
+            if !isScrollEnabled {
+                invalidateIntrinsicContentSize()
+            }
+        }
+    }
+
+    override var intrinsicContentSize: CGSize {
+        if isScrollEnabled {
+            return super.intrinsicContentSize
+        }
+        return CGSize(width: UIView.noIntrinsicMetric, height: contentSize.height)
+    }
 }
 
 struct RichTextEditor: UIViewRepresentable {
@@ -58,6 +80,7 @@ struct RichTextEditor: UIViewRepresentable {
     var font: UIFont
     var textColor: UIColor
     var backgroundColor: UIColor
+    var autoExpandHeight: Bool
 
     init(
         text: Binding<String>,
@@ -65,7 +88,8 @@ struct RichTextEditor: UIViewRepresentable {
         font: UIFont = .preferredFont(forTextStyle: .body),
         textColor: UIColor = .label,
         backgroundColor: UIColor = .clear,
-        commands: RichTextEditorCommands? = nil
+        commands: RichTextEditorCommands? = nil,
+        autoExpandHeight: Bool = false
     ) {
         self.storage = .plain(text)
         self.commands = commands
@@ -73,6 +97,7 @@ struct RichTextEditor: UIViewRepresentable {
         self.font = font
         self.textColor = textColor
         self.backgroundColor = backgroundColor
+        self.autoExpandHeight = autoExpandHeight
     }
 
     init(
@@ -81,7 +106,8 @@ struct RichTextEditor: UIViewRepresentable {
         font: UIFont = .preferredFont(forTextStyle: .body),
         textColor: UIColor = .label,
         backgroundColor: UIColor = .clear,
-        commands: RichTextEditorCommands? = nil
+        commands: RichTextEditorCommands? = nil,
+        autoExpandHeight: Bool = false
     ) {
         self.storage = .attributed(attributedText)
         self.commands = commands
@@ -89,6 +115,7 @@ struct RichTextEditor: UIViewRepresentable {
         self.font = font
         self.textColor = textColor
         self.backgroundColor = backgroundColor
+        self.autoExpandHeight = autoExpandHeight
     }
 
     func makeCoordinator() -> Coordinator {
@@ -96,7 +123,7 @@ struct RichTextEditor: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> UITextView {
-        let textView = UITextView()
+        let textView = AutoSizingTextView()
         textView.delegate = context.coordinator
         configure(textView)
         applyCurrentValue(to: textView, preserveSelection: false)
@@ -106,13 +133,19 @@ struct RichTextEditor: UIViewRepresentable {
 
     func updateUIView(_ uiView: UITextView, context: Context) {
         configure(uiView)
-        applyCurrentValue(to: uiView, preserveSelection: true)
+
+        // Avoid resetting attributed text while the user is actively typing,
+        // which can cause cursor jumps and misplaced insertion.
+        if !uiView.isFirstResponder {
+            applyCurrentValue(to: uiView, preserveSelection: true)
+        }
+
         commands?.textView = uiView
     }
 
     private func configure(_ textView: UITextView) {
         textView.isEditable = isEditable
-        textView.isScrollEnabled = true
+        textView.isScrollEnabled = !autoExpandHeight
         textView.backgroundColor = backgroundColor
         textView.textColor = textColor
         textView.font = font
@@ -449,6 +482,39 @@ private enum RichTextEditorFormatting {
         let newLength = (replacement as NSString).length
         textView.selectedRange = NSRange(location: paragraphRange.location, length: min(newLength, mutable.length - paragraphRange.location))
 
+        textView.delegate?.textViewDidChange?(textView)
+    }
+
+    static func normalizeFormatting(in textView: UITextView) {
+        let baseFont = (textView.typingAttributes[.font] as? UIFont) ?? textView.font ?? .preferredFont(forTextStyle: .body)
+        let baseColor = (textView.typingAttributes[.foregroundColor] as? UIColor) ?? .label
+
+        let mutable = NSMutableAttributedString(attributedString: textView.attributedText)
+        let fullRange = NSRange(location: 0, length: mutable.length)
+        guard fullRange.length > 0 else { return }
+
+        mutable.enumerateAttributes(in: fullRange, options: []) { attrs, range, _ in
+            let currentFont = (attrs[.font] as? UIFont) ?? baseFont
+            let descriptor = currentFont.fontDescriptor
+            let traits = descriptor.symbolicTraits
+            let normalizedDescriptor = baseFont.fontDescriptor.withSymbolicTraits(traits) ?? baseFont.fontDescriptor
+            let normalizedFont = UIFont(descriptor: normalizedDescriptor, size: baseFont.pointSize)
+
+            mutable.addAttribute(.font, value: normalizedFont, range: range)
+            mutable.addAttribute(.foregroundColor, value: baseColor, range: range)
+
+            if attrs[.backgroundColor] != nil {
+                mutable.removeAttribute(.backgroundColor, range: range)
+            }
+            if attrs[.link] != nil {
+                mutable.removeAttribute(.link, range: range)
+            }
+            if attrs[.strikethroughStyle] != nil {
+                mutable.removeAttribute(.strikethroughStyle, range: range)
+            }
+        }
+
+        textView.attributedText = mutable
         textView.delegate?.textViewDidChange?(textView)
     }
 }

@@ -295,7 +295,7 @@ struct ManageLibraryView: View {
     }
 
     private var manageEntriesList: some View {
-        List(selection: $selectedID) {
+        List {
             if filtered.isEmpty {
                 ContentUnavailableView(
                     "No entries",
@@ -306,6 +306,11 @@ struct ManageLibraryView: View {
             } else {
                 ForEach(filtered) { t in
                     manageEntryRow(t)
+                        .listRowBackground(
+                            selectedID == t.id
+                            ? Color.accentColor.opacity(0.16)
+                            : Color.clear
+                        )
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             Button(role: .destructive) {
                                 pendingDeleteEntryID = t.id
@@ -348,7 +353,8 @@ struct ManageLibraryView: View {
         .onTapGesture {
             guard selectedID != t.id else { return }
 
-            if detailIsEditing && (detailHasUnsavedChanges || draftNewEntryID != nil) {
+            // Always treat draft entries as having unsaved changes
+            if draftNewEntryID != nil || (detailIsEditing && detailHasUnsavedChanges) {
                 pendingSelectionID = t.id
                 showDiscardChangesAlert = true
             } else {
@@ -609,6 +615,13 @@ private struct ManageEntryDetail: View {
                                 richTextCommands.toggleNumberedList()
                             } label: {
                                 Image(systemName: "list.number")
+                            }
+                            .buttonStyle(.bordered)
+
+                            Button {
+                                richTextCommands.normalizeFormatting()
+                            } label: {
+                                Image(systemName: "textformat")
                             }
                             .buttonStyle(.bordered)
                         }

@@ -9,6 +9,7 @@
 
 import SwiftUI
 import Foundation
+import UIKit
 
 struct NewReportView: View {
     @EnvironmentObject private var store: AppStore
@@ -38,6 +39,7 @@ struct NewReportView: View {
     @State private var showDeleteWarning: Bool = false
     @State private var showHistorySheet: Bool = false
     @State private var collapsedSelectedEntries: Bool = false
+    @State private var expandedEntryIDs: Set<UUID> = []
 
     private var filteredEntries: [LibraryEntry] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -301,7 +303,7 @@ struct NewReportView: View {
                 .buttonStyle(.bordered)
             }
             .padding(.horizontal)
-            .padding(.top, 8)
+            .padding(.top, 6)
 
             VStack(spacing: 10) {
                 HStack(spacing: 10) {
@@ -330,6 +332,7 @@ struct NewReportView: View {
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 8)
+                            .listRowSeparatorTint(Color.accentColor.opacity(0.7))
                             .background(
                                 RoundedRectangle(cornerRadius: 8)
                                     .fill(Color.secondary.opacity(0.12))
@@ -353,6 +356,7 @@ struct NewReportView: View {
                 }
             }
             .padding(.horizontal)
+            .padding(.top, -10)
 
             if planEntries.isEmpty {
                 ContentUnavailableView(
@@ -370,12 +374,15 @@ struct NewReportView: View {
 
                     Button(collapsedSelectedEntries ? "Expand" : "Collapse") {
                         collapsedSelectedEntries.toggle()
+                        if collapsedSelectedEntries {
+                            expandedEntryIDs.removeAll()
+                        }
                     }
                     .font(.subheadline)
                     .buttonStyle(.plain)
                 }
                 .padding(.horizontal)
-                .padding(.top, 4)
+                .padding(.top, -2)
 
                 List {
                     Section {
@@ -403,8 +410,29 @@ struct NewReportView: View {
                                         Text("Content")
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
-                                        TextEditor(text: $entry.body)
-                                            .frame(minHeight: 180)
+                                        RichTextEditor(
+                                            attributedText: Binding(
+                                                get: { entry.attributedBody },
+                                                set: { newValue in
+                                                    entry.setAttributedBody(newValue)
+                                                }
+                                            ),
+                                            isEditable: true,
+                                            font: .preferredFont(forTextStyle: .title3)
+                                        )
+                                            .frame(minHeight: expandedEntryIDs.contains(entry.id) ? 420 : 180)
+                                            .contentShape(Rectangle())
+                                            .onTapGesture(count: 2) {
+                                                if expandedEntryIDs.contains(entry.id) {
+                                                    expandedEntryIDs.remove(entry.id)
+                                                } else {
+                                                    expandedEntryIDs.insert(entry.id)
+                                                }
+                                            }
+                                            .background(
+                                                RoundedRectangle(cornerRadius: 8)
+                                                    .fill(Color.black.opacity(0.35))
+                                            )
                                             .overlay(
                                                 RoundedRectangle(cornerRadius: 8)
                                                     .stroke(.secondary.opacity(0.35))
@@ -416,6 +444,7 @@ struct NewReportView: View {
                         }
                         .onMove { from, to in
                             planEntries.move(fromOffsets: from, toOffset: to)
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
                         }
                     }
                 }
@@ -477,6 +506,7 @@ struct NewReportView: View {
             }
             .padding([.horizontal, .bottom])
         }
+        .padding(.top, -56)
     }
     private func addToPlan(templateID: UUID) {
         guard let t = store.entry(id: templateID) else { return }
@@ -489,7 +519,9 @@ struct NewReportView: View {
                 title: t.title,
                 originalTitle: t.title,
                 body: t.body,
-                originalBody: t.body
+                originalBody: t.body,
+                bodyRTFData: t.bodyRTFData,
+                originalBodyRTFData: t.bodyRTFData
             )
         )
     }
@@ -514,7 +546,9 @@ struct NewReportView: View {
                 title: "",
                 originalTitle: "",
                 body: "",
-                originalBody: ""
+                originalBody: "",
+                bodyRTFData: nil,
+                originalBodyRTFData: nil
             ),
             at: 0
         )
@@ -529,6 +563,7 @@ struct NewReportView: View {
         }
         return entry.body != entry.originalBody
             || entry.title != entry.originalTitle
+            || entry.bodyRTFData != entry.originalBodyRTFData
     }
 
     private func requestDelete(entryID: UUID) {
@@ -543,6 +578,7 @@ struct NewReportView: View {
 
     private func deleteEntryNow(id: UUID) {
         planEntries.removeAll { $0.id == id }
+        expandedEntryIDs.remove(id)
     }
 
     private func clearForm() {
@@ -554,6 +590,7 @@ struct NewReportView: View {
         patientName = ""
         reportDate = Date()
         planEntries = []
+        expandedEntryIDs.removeAll()
         selectedEntryID = nil
     }
 

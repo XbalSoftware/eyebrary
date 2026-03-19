@@ -139,6 +139,8 @@ struct PlanEntry: Identifiable, Codable, Equatable {
 
     var body: String
     var originalBody: String
+    var bodyRTFData: Data? = nil
+    var originalBodyRTFData: Data? = nil
 
     init(
         id: UUID,
@@ -146,7 +148,9 @@ struct PlanEntry: Identifiable, Codable, Equatable {
         title: String,
         originalTitle: String,
         body: String,
-        originalBody: String
+        originalBody: String,
+        bodyRTFData: Data? = nil,
+        originalBodyRTFData: Data? = nil
     ) {
         self.id = id
         self.templateID = templateID
@@ -154,12 +158,14 @@ struct PlanEntry: Identifiable, Codable, Equatable {
         self.originalTitle = originalTitle
         self.body = body
         self.originalBody = originalBody
+        self.bodyRTFData = bodyRTFData
+        self.originalBodyRTFData = originalBodyRTFData
     }
 }
 
 extension PlanEntry {
     enum CodingKeys: String, CodingKey {
-        case id, templateID, EntryID, title, originalTitle, body, originalBody, assessment, plan, originalAssessment, originalPlan
+        case id, templateID, EntryID, title, originalTitle, body, originalBody, bodyRTFData, originalBodyRTFData, assessment, plan, originalAssessment, originalPlan
     }
 
     init(from decoder: Decoder) throws {
@@ -196,6 +202,8 @@ extension PlanEntry {
         } else {
             originalBody = decodedOriginalPlan
         }
+        bodyRTFData = try c.decodeIfPresent(Data.self, forKey: .bodyRTFData)
+        originalBodyRTFData = try c.decodeIfPresent(Data.self, forKey: .originalBodyRTFData)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -206,6 +214,36 @@ extension PlanEntry {
         try c.encode(originalTitle, forKey: .originalTitle)
         try c.encode(body, forKey: .body)
         try c.encode(originalBody, forKey: .originalBody)
+        try c.encodeIfPresent(bodyRTFData, forKey: .bodyRTFData)
+        try c.encodeIfPresent(originalBodyRTFData, forKey: .originalBodyRTFData)
+    }
+}
+
+extension PlanEntry {
+    var attributedBody: NSAttributedString {
+        if let bodyRTFData,
+           let attributed = try? NSAttributedString.eyeBrary_fromRTFData(bodyRTFData) {
+            return attributed
+        }
+        return NSAttributedString(string: body)
+    }
+
+    var attributedOriginalBody: NSAttributedString {
+        if let originalBodyRTFData,
+           let attributed = try? NSAttributedString.eyeBrary_fromRTFData(originalBodyRTFData) {
+            return attributed
+        }
+        return NSAttributedString(string: originalBody)
+    }
+
+    mutating func setAttributedBody(_ attributed: NSAttributedString) {
+        body = attributed.string
+        bodyRTFData = try? attributed.eyeBrary_toRTFData()
+    }
+
+    mutating func setAttributedOriginalBody(_ attributed: NSAttributedString) {
+        originalBody = attributed.string
+        originalBodyRTFData = try? attributed.eyeBrary_toRTFData()
     }
 }
 
@@ -540,6 +578,7 @@ final class AppStore: ObservableObject {
             updatedAt: Date()
         )
         plans.insert(item, at: 0)
+        plans = Array(plans.prefix(10))
     }
     func addToHistory(reportTitle: String, reportDate: Date, patientName: String, entries: [PlanEntry]) {
         addToHistory(patientName: patientName, reportTitle: reportTitle, reportDate: reportDate, entries: entries)
