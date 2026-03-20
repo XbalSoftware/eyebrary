@@ -75,6 +75,38 @@ enum PlanPDFBuilder {
                 return best
             }
 
+            func normalizedBodyAttributedString(for attributedString: NSAttributedString, baseFont: UIFont) -> NSAttributedString {
+                let mutable = NSMutableAttributedString(attributedString: attributedString)
+                let fullRange = NSRange(location: 0, length: mutable.length)
+
+                guard fullRange.length > 0 else { return mutable }
+
+                mutable.enumerateAttributes(in: fullRange, options: []) { attrs, range, _ in
+                    let currentFont = (attrs[.font] as? UIFont) ?? baseFont
+                    let descriptor = currentFont.fontDescriptor
+                    let traits = descriptor.symbolicTraits
+                    let normalizedDescriptor = baseFont.fontDescriptor.withSymbolicTraits(traits) ?? baseFont.fontDescriptor
+                    let normalizedFont = UIFont(descriptor: normalizedDescriptor, size: baseFont.pointSize)
+
+                    mutable.addAttribute(.font, value: normalizedFont, range: range)
+                    mutable.addAttribute(.foregroundColor, value: UIColor.black, range: range)
+
+                    if let paragraphStyle = attrs[.paragraphStyle] as? NSParagraphStyle {
+                        let style = (paragraphStyle.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+                        let scale = max(0.01, baseFont.pointSize / max(currentFont.pointSize, 0.01))
+                        style.firstLineHeadIndent *= scale
+                        style.headIndent *= scale
+                        style.tailIndent *= scale
+                        style.paragraphSpacing *= scale
+                        style.paragraphSpacingBefore *= scale
+                        style.lineSpacing *= scale
+                        mutable.addAttribute(.paragraphStyle, value: style, range: range)
+                    }
+                }
+
+                return mutable
+            }
+
             func drawContinuationNote() {
                 let note = "Continued on next page"
                 let noteRect = CGRect(x: margin + 18, y: contentBottomY - continuationReserve, width: contentWidth - 18, height: 12)
@@ -139,11 +171,23 @@ enum PlanPDFBuilder {
 
             for entry in entries {
                 let entryTitle = entry.title.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-                let entryBody = entry.body.trimmingCharacters(in: .whitespacesAndNewlines)
+                let bodyAttributed = normalizedBodyAttributedString(for: entry.attributedBody, baseFont: bodyFont)
+                let entryBody = bodyAttributed.string.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !entryTitle.isEmpty || !entryBody.isEmpty else { continue }
 
-                let headerHeight: CGFloat = entryTitle.isEmpty ? 0 : 26
                 let bodyIndent: CGFloat = 18
+                let headerTextInsetX: CGFloat = 12
+                let headerTextInsetY: CGFloat = 5
+                let headerTextWidth = contentWidth - (headerTextInsetX * 2)
+                let headerTextHeight: CGFloat = entryTitle.isEmpty ? 0 : ceil((entryTitle as NSString).boundingRect(
+                    with: CGSize(width: headerTextWidth, height: .greatestFiniteMagnitude),
+                    options: [.usesLineFragmentOrigin, .usesFontLeading],
+                    attributes: [
+                        .font: UIFont.systemFont(ofSize: 12, weight: .bold)
+                    ],
+                    context: nil
+                ).height)
+                let headerHeight: CGFloat = entryTitle.isEmpty ? 0 : max(26, headerTextHeight + (headerTextInsetY * 2))
                 let firstChunkHeight: CGFloat = entryBody.isEmpty ? 0 : 56
                 let minimumSectionHeight = headerHeight + (entryTitle.isEmpty ? 0 : 10) + firstChunkHeight
 
@@ -165,129 +209,113 @@ enum PlanPDFBuilder {
                     headerPath.lineWidth = 2.25
                     headerPath.stroke()
 
-                    let textRect = headerRect.insetBy(dx: 12, dy: 5)
-                    (entryTitle as NSString).draw(in: textRect, withAttributes: [
-                        .font: UIFont.systemFont(ofSize: 12, weight: .bold),
-                        .foregroundColor: UIColor.black
-                    ])
+                    let textRect = CGRect(
+                        x: headerRect.minX + headerTextInsetX,
+                        y: headerRect.minY + headerTextInsetY,
+                        width: headerTextWidth,
+                        height: headerHeight - (headerTextInsetY * 2)
+                    )
+                    (entryTitle as NSString).draw(
+                        with: textRect,
+                        options: [.usesLineFragmentOrigin, .usesFontLeading],
+                        attributes: [
+                            .font: UIFont.systemFont(ofSize: 12, weight: .bold),
+                            .foregroundColor: UIColor.black
+                        ],
+                        context: nil
+                    )
                     y += headerHeight + 10
                 }
 
                 let bodyWidth = contentWidth - bodyIndent
-                let bodyAttributes: [NSAttributedString.Key: Any] = [
-                    .font: bodyFont,
-                    .foregroundColor: UIColor.black
-                ]
-                let bodyParagraphs = entryBody.components(separatedBy: .newlines)
+                let fullBodyString = bodyAttributed
 
-                for (index, paragraph) in bodyParagraphs.enumerated() {
-                    if paragraph.isEmpty {
-                        y += 6
-                        continue
-                    }
-
-                    let paragraphString = NSAttributedString(string: paragraph, attributes: bodyAttributes)
-                    let paragraphRect = paragraphString.boundingRect(
+                if fullBodyString.length > 0 {
+                    let fullBodyRect = fullBodyString.boundingRect(
                         with: CGSize(width: bodyWidth, height: .greatestFiniteMagnitude),
                         options: [.usesLineFragmentOrigin, .usesFontLeading],
                         context: nil
                     )
-                    let paragraphHeight = ceil(paragraphRect.height)
+                    let fullBodyHeight = ceil(fullBodyRect.height)
 
-                    if y + paragraphHeight > contentBottomY - continuationReserve {
-                        let freshPageAvailableHeight = contentBottomY - contentStartY
+                    if y + fullBodyHeight <= contentBottomY {
+                        fullBodyString.draw(
+                            with: CGRect(x: margin + bodyIndent, y: y, width: bodyWidth, height: fullBodyHeight + 4),
+                            options: [.usesLineFragmentOrigin, .usesFontLeading],
+                            context: nil
+                        )
+                        y += fullBodyHeight + 10
+                    } else {
+                        var drawLocation = 0
+                        let bodyNSString = fullBodyString.string as NSString
 
-                        if paragraphHeight <= freshPageAvailableHeight {
-                            drawContinuationNote()
-                            context.beginPage()
-                            drawLetterhead(on: context)
-                            y = contentStartY
-                        } else {
-                            let fullBodyString = paragraphString
-                            var drawLocation = 0
+                        while drawLocation < fullBodyString.length {
+                            let availableBodyHeight = contentBottomY - continuationReserve - y
+                            if availableBodyHeight < 24 {
+                                drawContinuationNote()
+                                context.beginPage()
+                                drawLetterhead(on: context)
+                                y = contentStartY
+                                continue
+                            }
+
+                            let remainingRange = NSRange(location: drawLocation, length: fullBodyString.length - drawLocation)
+                            let remainingString = fullBodyString.attributedSubstring(from: remainingRange)
+                            var fitLength = fittingLength(for: remainingString, width: bodyWidth, maxHeight: availableBodyHeight)
+
+                            if fitLength == 0 {
+                                drawContinuationNote()
+                                context.beginPage()
+                                drawLetterhead(on: context)
+                                y = contentStartY
+                                continue
+                            }
+
+                            if drawLocation + fitLength < fullBodyString.length {
+                                let candidateRange = NSRange(location: drawLocation, length: fitLength)
+                                let whitespaceRange = bodyNSString.rangeOfCharacter(
+                                    from: .whitespacesAndNewlines,
+                                    options: .backwards,
+                                    range: candidateRange
+                                )
+                                if whitespaceRange.location != NSNotFound, whitespaceRange.location > drawLocation {
+                                    fitLength = whitespaceRange.location - drawLocation
+                                }
+                            }
+
+                            let drawRange = NSRange(location: drawLocation, length: fitLength)
+                            let chunk = fullBodyString.attributedSubstring(from: drawRange)
+                            let usedRect = chunk.boundingRect(
+                                with: CGSize(width: bodyWidth, height: .greatestFiniteMagnitude),
+                                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                                context: nil
+                            )
+                            chunk.draw(
+                                with: CGRect(x: margin + bodyIndent, y: y, width: bodyWidth, height: ceil(usedRect.height) + 4),
+                                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                                context: nil
+                            )
+                            y += ceil(usedRect.height) + 10
+                            drawLocation += fitLength
+
                             while drawLocation < fullBodyString.length {
-                                let availableBodyHeight = contentBottomY - continuationReserve - y
-                                if availableBodyHeight < 24 {
-                                    drawContinuationNote()
-                                    context.beginPage()
-                                    drawLetterhead(on: context)
-                                    y = contentStartY
-                                    continue
-                                }
-
-                                let remainingRange = NSRange(location: drawLocation, length: fullBodyString.length - drawLocation)
-                                let remainingString = fullBodyString.attributedSubstring(from: remainingRange)
-                                var fitLength = fittingLength(for: remainingString, width: bodyWidth, maxHeight: availableBodyHeight)
-
-                                if fitLength == 0 {
-                                    drawContinuationNote()
-                                    context.beginPage()
-                                    drawLetterhead(on: context)
-                                    y = contentStartY
-                                    continue
-                                }
-
-                                if drawLocation + fitLength < fullBodyString.length {
-                                    let remainingText = fullBodyString.string as NSString
-                                    let candidateRange = NSRange(location: drawLocation, length: fitLength)
-                                    let whitespaceRange = remainingText.rangeOfCharacter(
-                                        from: .whitespacesAndNewlines,
-                                        options: .backwards,
-                                        range: candidateRange
-                                    )
-                                    if whitespaceRange.location != NSNotFound, whitespaceRange.location > drawLocation {
-                                        fitLength = whitespaceRange.location - drawLocation
-                                    }
-                                }
-
-                                let drawRange = NSRange(location: drawLocation, length: fitLength)
-                                let chunk = fullBodyString.attributedSubstring(from: drawRange)
-                                let chunkRect = CGRect(x: margin + bodyIndent, y: y, width: bodyWidth, height: availableBodyHeight)
-                                let usedRect = chunk.boundingRect(
-                                    with: CGSize(width: bodyWidth, height: .greatestFiniteMagnitude),
-                                    options: [.usesLineFragmentOrigin, .usesFontLeading],
-                                    context: nil
-                                )
-                                chunk.draw(
-                                    with: CGRect(x: chunkRect.minX, y: chunkRect.minY, width: bodyWidth, height: ceil(usedRect.height) + 4),
-                                    options: [.usesLineFragmentOrigin, .usesFontLeading],
-                                    context: nil
-                                )
-                                y += ceil(usedRect.height) + 18
-                                drawLocation += fitLength
-
-                                while drawLocation < fullBodyString.length {
-                                    let scalar = (fullBodyString.string as NSString).character(at: drawLocation)
-                                    if let unicode = UnicodeScalar(scalar), CharacterSet.whitespacesAndNewlines.contains(unicode) {
-                                        drawLocation += 1
-                                    } else {
-                                        break
-                                    }
-                                }
-
-                                if drawLocation < fullBodyString.length {
-                                    drawContinuationNote()
-                                    context.beginPage()
-                                    drawLetterhead(on: context)
-                                    y = contentStartY
+                                let scalar = bodyNSString.character(at: drawLocation)
+                                if let unicode = UnicodeScalar(scalar), CharacterSet.whitespacesAndNewlines.contains(unicode) {
+                                    drawLocation += 1
+                                } else {
+                                    break
                                 }
                             }
 
-                            if index < bodyParagraphs.count - 1 {
-                                y += 4
+                            if drawLocation < fullBodyString.length {
+                                drawContinuationNote()
+                                context.beginPage()
+                                drawLetterhead(on: context)
+                                y = contentStartY
                             }
-                            continue
                         }
                     }
-
-                    paragraphString.draw(
-                        with: CGRect(x: margin + bodyIndent, y: y, width: bodyWidth, height: paragraphHeight + 4),
-                        options: [.usesLineFragmentOrigin, .usesFontLeading],
-                        context: nil
-                    )
-                    y += paragraphHeight + 2
                 }
-                y += 10
             }
         }
 
