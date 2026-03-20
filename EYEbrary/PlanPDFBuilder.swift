@@ -26,7 +26,7 @@ enum PlanPDFBuilder {
         let renderer = UIGraphicsPDFRenderer(bounds: pageRect)
         let contentStartY: CGFloat = 112
         let contentBottomY: CGFloat = pageRect.height - 120
-        let continuationReserve: CGFloat = 18
+        let continuationReserve: CGFloat = 10
 
         try renderer.writePDF(to: outputURL) { context in
             func drawLetterhead(on context: UIGraphicsPDFRendererContext) {
@@ -75,6 +75,158 @@ enum PlanPDFBuilder {
                 return best
             }
 
+
+            func fittedRangeRespectingWidowsAndOrphans(
+                for attributedString: NSAttributedString,
+                width: CGFloat,
+                maxHeight: CGFloat,
+                bodyFont: UIFont,
+                minimumLinesAtBottom: Int = 3,
+                minimumLinesAtTop: Int = 2
+            ) -> Int {
+                let fitLength = fittingLength(for: attributedString, width: width, maxHeight: maxHeight)
+                if fitLength == 0 {
+                    return 0
+                }
+
+                if fitLength >= attributedString.length {
+                    return fitLength
+                }
+
+                if splitCreatesWidowOrOrphan(
+                    for: attributedString,
+                    splitLength: fitLength,
+                    width: width,
+                    bodyFont: bodyFont,
+                    minimumLinesAtBottom: minimumLinesAtBottom,
+                    minimumLinesAtTop: minimumLinesAtTop
+                ) {
+                    return 0
+                }
+
+                return fitLength
+            }
+
+
+            func splitCreatesWidowOrOrphan(
+                for attributedString: NSAttributedString,
+                splitLength: Int,
+                width: CGFloat,
+                bodyFont: UIFont,
+                minimumLinesAtBottom: Int = 3,
+                minimumLinesAtTop: Int = 2
+            ) -> Bool {
+                guard splitLength > 0, splitLength < attributedString.length else { return false }
+
+                let lineHeight = ceil(bodyFont.lineHeight)
+                let minimumBottomHeight = CGFloat(minimumLinesAtBottom) * lineHeight
+                let minimumTopHeight = CGFloat(minimumLinesAtTop) * lineHeight
+
+                let bottomRect = attributedString.attributedSubstring(from: NSRange(location: 0, length: splitLength)).boundingRect(
+                    with: CGSize(width: width, height: .greatestFiniteMagnitude),
+                    options: [.usesLineFragmentOrigin, .usesFontLeading],
+                    context: nil
+                )
+                let topRect = attributedString.attributedSubstring(from: NSRange(location: splitLength, length: attributedString.length - splitLength)).boundingRect(
+                    with: CGSize(width: width, height: .greatestFiniteMagnitude),
+                    options: [.usesLineFragmentOrigin, .usesFontLeading],
+                    context: nil
+                )
+
+                return ceil(bottomRect.height) < minimumBottomHeight || ceil(topRect.height) < minimumTopHeight
+            }
+            func bestSplitLength(
+                for attributedString: NSAttributedString,
+                width: CGFloat,
+                maxHeight: CGFloat,
+                bodyFont: UIFont,
+                minimumLinesAtBottom: Int = 3,
+                minimumLinesAtTop: Int = 2
+            ) -> Int {
+                let rawFit = fittingLength(for: attributedString, width: width, maxHeight: maxHeight)
+                guard rawFit > 0 else { return 0 }
+
+                if rawFit >= attributedString.length {
+                    return rawFit
+                }
+
+                let text = attributedString.string as NSString
+                let candidateRange = NSRange(location: 0, length: rawFit)
+
+                var candidates: [Int] = [rawFit]
+
+                let sentenceRange = text.range(of: ". ", options: .backwards, range: candidateRange)
+                if sentenceRange.location != NSNotFound, sentenceRange.location > 0 {
+                    candidates.append(sentenceRange.location + 1)
+                }
+
+                let whitespaceRange = text.rangeOfCharacter(
+                    from: .whitespacesAndNewlines,
+                    options: .backwards,
+                    range: candidateRange
+                )
+                if whitespaceRange.location != NSNotFound, whitespaceRange.location > 0 {
+                    candidates.append(whitespaceRange.location)
+                }
+
+                let sortedCandidates = candidates.sorted(by: >)
+
+                // 1. Strict rule (3 / 2)
+                for candidate in sortedCandidates {
+                    guard candidate > 0 else { continue }
+                    if candidate >= attributedString.length { return candidate }
+
+                    if !splitCreatesWidowOrOrphan(
+                        for: attributedString,
+                        splitLength: candidate,
+                        width: width,
+                        bodyFont: bodyFont,
+                        minimumLinesAtBottom: minimumLinesAtBottom,
+                        minimumLinesAtTop: minimumLinesAtTop
+                    ) {
+                        return candidate
+                    }
+                }
+
+                // 2. Fallback rule (2 / 2)
+                for candidate in sortedCandidates {
+                    guard candidate > 0 else { continue }
+                    if candidate >= attributedString.length { return candidate }
+
+                    if !splitCreatesWidowOrOrphan(
+                        for: attributedString,
+                        splitLength: candidate,
+                        width: width,
+                        bodyFont: bodyFont,
+                        minimumLinesAtBottom: 2,
+                        minimumLinesAtTop: 2
+                    ) {
+                        return candidate
+                    }
+                }
+
+                // 3. Final fallback — avoid only a single-line orphan
+                let lineHeight = ceil(bodyFont.lineHeight)
+
+                for candidate in sortedCandidates {
+                    guard candidate > 0 else { continue }
+                    if candidate >= attributedString.length { return candidate }
+
+                    let bottomRect = attributedString.attributedSubstring(
+                        from: NSRange(location: 0, length: candidate)
+                    ).boundingRect(
+                        with: CGSize(width: width, height: .greatestFiniteMagnitude),
+                        options: [.usesLineFragmentOrigin, .usesFontLeading],
+                        context: nil
+                    )
+
+                    if ceil(bottomRect.height) >= lineHeight {
+                        return candidate
+                    }
+                }
+
+                return 0
+            }
             func normalizedBodyAttributedString(for attributedString: NSAttributedString, baseFont: UIFont) -> NSAttributedString {
                 let mutable = NSMutableAttributedString(attributedString: attributedString)
                 let fullRange = NSRange(location: 0, length: mutable.length)
@@ -123,25 +275,27 @@ enum PlanPDFBuilder {
             var y: CGFloat = contentStartY
             let contentWidth = pageRect.width - (margin * 2)
 
-            let title = reportTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Eye Exam Summary" : reportTitle
+            let title = reportTitle.trimmingCharacters(in: .whitespacesAndNewlines)
             let headingFont = UIFont.systemFont(ofSize: 22, weight: .bold)
             let subheadingFont = UIFont.systemFont(ofSize: 12, weight: .semibold)
             let bodyFont = UIFont.systemFont(ofSize: 10)
             let continuationFont = UIFont.italicSystemFont(ofSize: 9)
 
-            let titleRect = CGRect(x: margin, y: y, width: contentWidth, height: 28)
-            (title as NSString).draw(
-                in: titleRect,
-                withAttributes: [
-                    .font: headingFont,
-                    .paragraphStyle: {
-                        let style = NSMutableParagraphStyle()
-                        style.alignment = .center
-                        return style
-                    }()
-                ]
-            )
-            y += 40
+            if !title.isEmpty {
+                let titleRect = CGRect(x: margin, y: y, width: contentWidth, height: 28)
+                (title as NSString).draw(
+                    in: titleRect,
+                    withAttributes: [
+                        .font: headingFont,
+                        .paragraphStyle: {
+                            let style = NSMutableParagraphStyle()
+                            style.alignment = .center
+                            return style
+                        }()
+                    ]
+                )
+                y += 40
+            }
 
             let trimmedPatientName = patientName.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmedPatientName.isEmpty {
@@ -261,7 +415,36 @@ enum PlanPDFBuilder {
 
                             let remainingRange = NSRange(location: drawLocation, length: fullBodyString.length - drawLocation)
                             let remainingString = fullBodyString.attributedSubstring(from: remainingRange)
-                            var fitLength = fittingLength(for: remainingString, width: bodyWidth, maxHeight: availableBodyHeight)
+                            var fitLength = bestSplitLength(
+                                for: remainingString,
+                                width: bodyWidth,
+                                maxHeight: availableBodyHeight,
+                                bodyFont: bodyFont,
+                                minimumLinesAtBottom: 3,
+                                minimumLinesAtTop: 2
+                            )
+
+                            if fitLength == 0 {
+                                let freshPageAvailableHeight = contentBottomY - continuationReserve - contentStartY
+                                fitLength = fittedRangeRespectingWidowsAndOrphans(
+                                    for: remainingString,
+                                    width: bodyWidth,
+                                    maxHeight: freshPageAvailableHeight,
+                                    bodyFont: bodyFont,
+                                    minimumLinesAtBottom: 3,
+                                    minimumLinesAtTop: 2
+                                )
+
+                                if fitLength == 0 {
+                                    fitLength = fittingLength(for: remainingString, width: bodyWidth, maxHeight: freshPageAvailableHeight)
+                                }
+
+                                drawContinuationNote()
+                                context.beginPage()
+                                drawLetterhead(on: context)
+                                y = contentStartY
+                                continue
+                            }
 
                             if fitLength == 0 {
                                 drawContinuationNote()
@@ -270,19 +453,6 @@ enum PlanPDFBuilder {
                                 y = contentStartY
                                 continue
                             }
-
-                            if drawLocation + fitLength < fullBodyString.length {
-                                let candidateRange = NSRange(location: drawLocation, length: fitLength)
-                                let whitespaceRange = bodyNSString.rangeOfCharacter(
-                                    from: .whitespacesAndNewlines,
-                                    options: .backwards,
-                                    range: candidateRange
-                                )
-                                if whitespaceRange.location != NSNotFound, whitespaceRange.location > drawLocation {
-                                    fitLength = whitespaceRange.location - drawLocation
-                                }
-                            }
-
                             let drawRange = NSRange(location: drawLocation, length: fitLength)
                             let chunk = fullBodyString.attributedSubstring(from: drawRange)
                             let usedRect = chunk.boundingRect(

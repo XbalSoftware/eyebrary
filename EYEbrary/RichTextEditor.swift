@@ -127,6 +127,7 @@ struct RichTextEditor: UIViewRepresentable {
         textView.delegate = context.coordinator
         configure(textView)
         applyCurrentValue(to: textView, preserveSelection: false)
+        commands?.textView = textView
         return textView
     }
 
@@ -134,6 +135,7 @@ struct RichTextEditor: UIViewRepresentable {
         configure(uiView)
         context.coordinator.storage = storage
         context.coordinator.commands = commands
+        commands?.textView = uiView
 
         // Avoid resetting attributed text while the user is actively typing,
         // which can cause cursor jumps and misplaced insertion.
@@ -531,22 +533,27 @@ private enum RichTextEditorFormatting {
     }
 
     static func normalizeFormatting(in textView: UITextView) {
-        let baseFont = (textView.typingAttributes[.font] as? UIFont) ?? textView.font ?? .preferredFont(forTextStyle: .body)
-        let baseColor = (textView.typingAttributes[.foregroundColor] as? UIColor) ?? .label
+        let currentBaseFont = textView.font ?? .preferredFont(forTextStyle: .body)
+        let regularDescriptor = currentBaseFont.fontDescriptor.withSymbolicTraits(currentBaseFont.fontDescriptor.symbolicTraits.subtracting(.traitBold).subtracting(.traitItalic)) ?? currentBaseFont.fontDescriptor
+        let baseFont = UIFont(descriptor: regularDescriptor, size: currentBaseFont.pointSize)
+        let baseColor = textView.textColor ?? .label
 
         let mutable = NSMutableAttributedString(attributedString: textView.attributedText)
         let previousOffset = textView.contentOffset
-        let fullRange = NSRange(location: 0, length: mutable.length)
+        let fullTextSelection = NSRange(location: 0, length: textView.attributedText.length)
+        var fullRange = NSRange(location: 0, length: mutable.length)
         guard fullRange.length > 0 else { return }
 
-        mutable.enumerateAttributes(in: fullRange, options: []) { attrs, range, _ in
-            let currentFont = (attrs[.font] as? UIFont) ?? baseFont
-            let descriptor = currentFont.fontDescriptor
-            let traits = descriptor.symbolicTraits
-            let normalizedDescriptor = baseFont.fontDescriptor.withSymbolicTraits(traits) ?? baseFont.fontDescriptor
-            let normalizedFont = UIFont(descriptor: normalizedDescriptor, size: baseFont.pointSize)
+        // Reduce extra blank lines before the Plan heading to a single blank line.
+        let planRegex = try? NSRegularExpression(pattern: "\\n{3,}(?=Plan:)", options: [.caseInsensitive])
+        let normalizedString = NSMutableString(string: mutable.string)
+        planRegex?.replaceMatches(in: normalizedString, options: [], range: fullRange, withTemplate: "\n\n")
+        mutable.replaceCharacters(in: NSRange(location: 0, length: mutable.length), with: normalizedString as String)
+        fullRange = NSRange(location: 0, length: mutable.length)
 
-            mutable.addAttribute(.font, value: normalizedFont, range: range)
+        // Normalize fonts/colors to a clean regular base style.
+        mutable.enumerateAttributes(in: fullRange, options: []) { attrs, range, _ in
+            mutable.addAttribute(.font, value: baseFont, range: range)
             mutable.addAttribute(.foregroundColor, value: baseColor, range: range)
 
             if attrs[.backgroundColor] != nil {
@@ -558,9 +565,78 @@ private enum RichTextEditorFormatting {
             if attrs[.strikethroughStyle] != nil {
                 mutable.removeAttribute(.strikethroughStyle, range: range)
             }
+            if attrs[.underlineStyle] != nil {
+                mutable.removeAttribute(.underlineStyle, range: range)
+            }
+        }
+
+        let normalizedNSString = mutable.string as NSString
+        let hasAssessmentOrPlanHeadings = normalizedNSString.range(of: "Assessment:", options: .caseInsensitive).location != NSNotFound ||
+            normalizedNSString.range(of: "Plan:", options: .caseInsensitive).location != NSNotFound
+        let bodyIndent: CGFloat = 16
+        let bulletIndent = ceil(("• " as NSString).size(withAttributes: [.font: baseFont]).width)
+        let numberIndent = ceil(("1. " as NSString).size(withAttributes: [.font: baseFont]).width)
+
+        var paragraphLocation = 0
+        while paragraphLocation < mutable.length {
+            let paragraphRange = normalizedNSString.paragraphRange(for: NSRange(location: paragraphLocation, length: 0))
+            let paragraphText = normalizedNSString.substring(with: paragraphRange)
+            let trimmedParagraph = paragraphText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            let existingStyle = mutable.attribute(.paragraphStyle, at: paragraphRange.location, effectiveRange: nil) as? NSParagraphStyle
+            let style = (existingStyle?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+
+            // Reset paragraphs to a clean base style.
+            style.firstLineHeadIndent = hasAssessmentOrPlanHeadings ? bodyIndent : 0
+            style.headIndent = hasAssessmentOrPlanHeadings ? bodyIndent : 0
+            style.tailIndent = 0
+            style.paragraphSpacing = 0
+            style.paragraphSpacingBefore = 0
+            style.lineSpacing = 0
+
+            if trimmedParagraph.range(of: "^\\d+\\.\\s", options: .regularExpression) != nil {
+                if hasAssessmentOrPlanHeadings {
+                    style.firstLineHeadIndent = bodyIndent * 2
+                    style.headIndent = (bodyIndent * 2) + numberIndent
+                } else {
+                    style.firstLineHeadIndent = 0
+                    style.headIndent = numberIndent
+                }
+            } else if trimmedParagraph.hasPrefix("• ") {
+                if hasAssessmentOrPlanHeadings {
+                    style.firstLineHeadIndent = bodyIndent * 2
+                    style.headIndent = (bodyIndent * 2) + bulletIndent
+                } else {
+                    style.firstLineHeadIndent = 0
+                    style.headIndent = bulletIndent
+                }
+            }
+
+            mutable.addAttribute(.paragraphStyle, value: style, range: paragraphRange)
+
+            if trimmedParagraph.caseInsensitiveCompare("Assessment:") == .orderedSame ||
+                trimmedParagraph.caseInsensitiveCompare("Plan:") == .orderedSame {
+                style.firstLineHeadIndent = 0
+                style.headIndent = 0
+                mutable.addAttribute(.paragraphStyle, value: style, range: paragraphRange)
+
+                let headingText = trimmedParagraph as NSString
+                let headingRange = NSRange(location: paragraphRange.location, length: headingText.length)
+                let headingTraits = baseFont.fontDescriptor.symbolicTraits.union(.traitBold)
+                let headingFont = UIFont(descriptor: baseFont.fontDescriptor.withSymbolicTraits(headingTraits) ?? baseFont.fontDescriptor, size: baseFont.pointSize)
+                mutable.addAttribute(.font, value: headingFont, range: headingRange)
+                mutable.addAttribute(.foregroundColor, value: baseColor, range: headingRange)
+            }
+
+            paragraphLocation = paragraphRange.location + paragraphRange.length
         }
 
         textView.attributedText = mutable
+        textView.typingAttributes = [
+            .font: baseFont,
+            .foregroundColor: baseColor
+        ]
+        textView.selectedRange = fullTextSelection
         restoreScrollPosition(textView, to: previousOffset)
         textView.delegate?.textViewDidChange?(textView)
     }
