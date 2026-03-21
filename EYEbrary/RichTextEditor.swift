@@ -599,16 +599,16 @@ private enum RichTextEditorFormatting {
                     style.firstLineHeadIndent = bodyIndent * 2
                     style.headIndent = (bodyIndent * 2) + numberIndent
                 } else {
-                    style.firstLineHeadIndent = 0
-                    style.headIndent = numberIndent
+                    style.firstLineHeadIndent = bodyIndent
+                    style.headIndent = bodyIndent + numberIndent
                 }
             } else if trimmedParagraph.hasPrefix("• ") {
                 if hasAssessmentOrPlanHeadings {
                     style.firstLineHeadIndent = bodyIndent * 2
                     style.headIndent = (bodyIndent * 2) + bulletIndent
                 } else {
-                    style.firstLineHeadIndent = 0
-                    style.headIndent = bulletIndent
+                    style.firstLineHeadIndent = bodyIndent
+                    style.headIndent = bodyIndent + bulletIndent
                 }
             }
 
