@@ -157,7 +157,7 @@ struct SettingsView: View {
                             }
                         }
                         do {
-                            try await handleLibraryImport(from: url)
+                            try handleLibraryImport(from: url)
                         } catch {
                             await MainActor.run {
                                 importErrorMessage = error.localizedDescription
@@ -235,7 +235,7 @@ struct SettingsView: View {
         }
     }
 
-    private func handleLibraryImport(from url: URL) async throws {
+    private func handleLibraryImport(from url: URL) throws {
         let mode = pendingImportMode ?? .merge
 
         if url.pathExtension.lowercased() == "eyebrarylib" {
@@ -248,7 +248,7 @@ struct SettingsView: View {
             let addedCount = incomingIDs.subtracting(existingIDs).count
             let updatedCount = incomingIDs.intersection(existingIDs).count
 
-            try await store.importEyeBraryLibraryPackage(from: url, merge: mode == .merge)
+            try store.importEyeBraryLibraryPackage(from: url, merge: mode == .merge)
 
             let successMessage: String
             switch mode {

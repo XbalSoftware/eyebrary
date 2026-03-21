@@ -55,6 +55,15 @@ struct NewReportView: View {
         }
 
         return filtered.sorted { (a, b) in
+            if !q.isEmpty {
+                let aTitleMatch = a.title.localizedCaseInsensitiveContains(q)
+                let bTitleMatch = b.title.localizedCaseInsensitiveContains(q)
+
+                if aTitleMatch != bTitleMatch {
+                    return aTitleMatch && !bTitleMatch
+                }
+            }
+
             let ao = a.order ?? Int.max
             let bo = b.order ?? Int.max
             if ao != bo { return ao < bo }
@@ -463,7 +472,7 @@ struct NewReportView: View {
                                                     Button {
                                                         richTextCommands(for: entry.id).normalizeFormatting()
                                                     } label: {
-                                                        Image(systemName: "textformat")
+                                                        Image(systemName: "wand.and.stars")
                                                     }
                                                     .buttonStyle(.bordered)
                                                 }
@@ -587,9 +596,7 @@ struct NewReportView: View {
         if let existing = richTextCommandsByEntryID[entryID] {
             return existing
         }
-        let created = RichTextEditorCommands()
-        richTextCommandsByEntryID[entryID] = created
-        return created
+        return RichTextEditorCommands()
     }
 
     private func addToPlan(templateID: UUID) {
@@ -609,6 +616,7 @@ struct NewReportView: View {
                 originalBodyRTFData: t.bodyRTFData
             )
         )
+        richTextCommandsByEntryID[newID] = RichTextEditorCommands()
         pendingScrollEntryID = newID
     }
     private func isEntrySelected(_ entryID: UUID) -> Bool {
@@ -639,6 +647,7 @@ struct NewReportView: View {
             ),
             at: 0
         )
+        richTextCommandsByEntryID[newID] = RichTextEditorCommands()
         pendingScrollEntryID = newID
     }
     private func needsDeleteWarning(for entry: PlanEntry) -> Bool {

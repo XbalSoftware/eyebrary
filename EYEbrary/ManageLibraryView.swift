@@ -45,6 +45,13 @@ struct ManageLibraryView: View {
                 $0.body.localizedCaseInsensitiveContains(q)
             }
             .sorted { a, b in
+                let aTitleMatch = a.title.localizedCaseInsensitiveContains(q)
+                let bTitleMatch = b.title.localizedCaseInsensitiveContains(q)
+
+                if aTitleMatch != bTitleMatch {
+                    return aTitleMatch && !bTitleMatch
+                }
+
                 let ao = a.order ?? Int.max
                 let bo = b.order ?? Int.max
                 if ao != bo { return ao < bo }
@@ -621,7 +628,7 @@ private struct ManageEntryDetail: View {
                             Button {
                                 richTextCommands.normalizeFormatting()
                             } label: {
-                                Image(systemName: "textformat")
+                                Image(systemName: "wand.and.stars")
                             }
                             .buttonStyle(.bordered)
                         }

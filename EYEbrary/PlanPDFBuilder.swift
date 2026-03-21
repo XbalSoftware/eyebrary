@@ -75,39 +75,6 @@ enum PlanPDFBuilder {
                 return best
             }
 
-
-            func fittedRangeRespectingWidowsAndOrphans(
-                for attributedString: NSAttributedString,
-                width: CGFloat,
-                maxHeight: CGFloat,
-                bodyFont: UIFont,
-                minimumLinesAtBottom: Int = 3,
-                minimumLinesAtTop: Int = 2
-            ) -> Int {
-                let fitLength = fittingLength(for: attributedString, width: width, maxHeight: maxHeight)
-                if fitLength == 0 {
-                    return 0
-                }
-
-                if fitLength >= attributedString.length {
-                    return fitLength
-                }
-
-                if splitCreatesWidowOrOrphan(
-                    for: attributedString,
-                    splitLength: fitLength,
-                    width: width,
-                    bodyFont: bodyFont,
-                    minimumLinesAtBottom: minimumLinesAtBottom,
-                    minimumLinesAtTop: minimumLinesAtTop
-                ) {
-                    return 0
-                }
-
-                return fitLength
-            }
-
-
             func splitCreatesWidowOrOrphan(
                 for attributedString: NSAttributedString,
                 splitLength: Int,
@@ -415,7 +382,7 @@ enum PlanPDFBuilder {
 
                             let remainingRange = NSRange(location: drawLocation, length: fullBodyString.length - drawLocation)
                             let remainingString = fullBodyString.attributedSubstring(from: remainingRange)
-                            var fitLength = bestSplitLength(
+                            let fitLength = bestSplitLength(
                                 for: remainingString,
                                 width: bodyWidth,
                                 maxHeight: availableBodyHeight,
@@ -425,20 +392,6 @@ enum PlanPDFBuilder {
                             )
 
                             if fitLength == 0 {
-                                let freshPageAvailableHeight = contentBottomY - continuationReserve - contentStartY
-                                fitLength = fittedRangeRespectingWidowsAndOrphans(
-                                    for: remainingString,
-                                    width: bodyWidth,
-                                    maxHeight: freshPageAvailableHeight,
-                                    bodyFont: bodyFont,
-                                    minimumLinesAtBottom: 3,
-                                    minimumLinesAtTop: 2
-                                )
-
-                                if fitLength == 0 {
-                                    fitLength = fittingLength(for: remainingString, width: bodyWidth, maxHeight: freshPageAvailableHeight)
-                                }
-
                                 drawContinuationNote()
                                 context.beginPage()
                                 drawLetterhead(on: context)
@@ -446,13 +399,6 @@ enum PlanPDFBuilder {
                                 continue
                             }
 
-                            if fitLength == 0 {
-                                drawContinuationNote()
-                                context.beginPage()
-                                drawLetterhead(on: context)
-                                y = contentStartY
-                                continue
-                            }
                             let drawRange = NSRange(location: drawLocation, length: fitLength)
                             let chunk = fullBodyString.attributedSubstring(from: drawRange)
                             let usedRect = chunk.boundingRect(
