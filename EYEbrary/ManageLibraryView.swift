@@ -482,6 +482,25 @@ private struct ManageEntryDetail: View {
         draftNewEntryID == entry.id
     }
 
+    private var metadataWordCount: Int {
+        bodyAttributed.string
+            .split { $0.isWhitespace || $0.isNewline }
+            .count
+    }
+
+    private var metadataReadText: String {
+        let seconds = max(10, Int(Double(metadataWordCount) / 3.5))
+        return seconds < 60
+            ? "~\(seconds) sec read"
+            : "~\(seconds / 60) min read"
+    }
+
+    private var metadataLastModifiedText: String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "dd MMM yyyy"
+        return formatter.string(from: entry.updatedAt).uppercased()
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 12) {
@@ -534,42 +553,57 @@ private struct ManageEntryDetail: View {
             .padding(.horizontal)
             .padding(.top, 8)
 
-            HStack {
-                Text("Category")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+            HStack(alignment: .top) {
                 Spacer()
-                Picker("Category", selection: $category) {
-                    let cats = store.categories.sorted { $0.order < $1.order }
-                    ForEach(cats) { item in
-                        Text(item.name).tag(item.id.isEmpty ? .general : item.id)
+
+                VStack(alignment: .trailing, spacing: 12) {
+                    HStack(spacing: 12) {
+                        Text("Category")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 110, alignment: .trailing)
+
+                        Picker("Category", selection: $category) {
+                            let cats = store.categories.sorted { $0.order < $1.order }
+                            ForEach(cats) { item in
+                                Text(item.name).tag(item.id.isEmpty ? .general : item.id)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(width: 120, alignment: .trailing)
+                    }
+
+                    HStack(spacing: 12) {
+                        Text("Visible in New Report")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 150, alignment: .trailing)
+
+                        Toggle("", isOn: $isVisible)
+                            .labelsHidden()
+                            .frame(width: 120, alignment: .trailing)
+                    }
+
+                    HStack(spacing: 12) {
+                        Text("Favorite")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 110, alignment: .trailing)
+
+                        Button {
+                            isFavorite.toggle()
+                        } label: {
+                            HStack {
+                                Spacer()
+                                Image(systemName: isFavorite ? "star.fill" : "star")
+                                    .foregroundStyle(isFavorite ? Color.yellow : Color.secondary)
+                                    .font(.system(size: 22, weight: .semibold))
+                            }
+                            .frame(width: 120, alignment: .trailing)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
-                .pickerStyle(.menu)
-            }
-            .padding(.horizontal)
-
-            HStack {
-                Text("Visible in New Report")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-
-                Spacer()
-
-                Toggle("", isOn: $isVisible)
-                    .labelsHidden()
-            }
-            .padding(.horizontal)
-
-            HStack {
-                Text("Favorite")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-
-                Spacer()
-
-                Toggle("", isOn: $isFavorite)
-                    .labelsHidden()
             }
             .padding(.horizontal)
 
@@ -649,9 +683,18 @@ private struct ManageEntryDetail: View {
             }
             .padding(.horizontal)
 
+
             if isEditing {
-                HStack {
+                HStack(alignment: .center) {
+                    Text("\(metadataWordCount) words (\(metadataReadText))")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
                     Spacer()
+
+                    Text("last modified: \(metadataLastModifiedText)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
 
                     Button(role: .destructive) {
                         showDeleteConfirm = true
