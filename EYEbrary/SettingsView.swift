@@ -38,6 +38,7 @@ private extension UTType {
 
 struct SettingsView: View {
     @EnvironmentObject private var store: AppStore
+    @AppStorage("EYEbrary.normalizeTextOnImport.v1") private var normalizeTextOnImport = true
     @State private var importErrorMessage: String?
     @State private var importInProgress = false
     @State private var showResetConfirm = false
@@ -77,6 +78,7 @@ struct SettingsView: View {
             }
 
             Section("Library") {
+                Toggle("Normalize text on import", isOn: $normalizeTextOnImport)
                 Button("Import Library") {
                     showImportModeDialog = true
                 }

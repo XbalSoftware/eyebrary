@@ -340,7 +340,15 @@ final class AppStore: ObservableObject {
     private let launchAcknowledgementKey = "EYEbrary.hasAcknowledgedAppInformation.v1"
     private let bundledDefaultLibraryName = "Default Library"
     private let bundledDefaultLibraryExtension = "eyebrarylib"
+    private let normalizeTextOnImportKey = "EYEbrary.normalizeTextOnImport.v1"
 
+    private var shouldNormalizeTextOnImport: Bool {
+        if UserDefaults.standard.object(forKey: normalizeTextOnImportKey) == nil {
+            return true
+        }
+        return UserDefaults.standard.bool(forKey: normalizeTextOnImportKey)
+    }
+    
     init() {
         loadCategories()
         loadTemplates()
@@ -443,7 +451,119 @@ final class AppStore: ObservableObject {
             return copy
         }
     }
+    private func normalizedImportedEntryIfNeeded(_ entry: LibraryEntry) -> LibraryEntry {
+        guard shouldNormalizeTextOnImport else { return entry }
 
+        var copy = entry
+        let cleaned = cleanedAttributedBodyForImport(from: copy.attributedBody)
+        copy.setAttributedBody(cleaned)
+        copy.updatedAt = Date()
+        return copy
+    }
+
+    private func cleanedAttributedBodyForImport(from source: NSAttributedString) -> NSAttributedString {
+        let currentBaseFont = UIFont.preferredFont(forTextStyle: .title3)
+        let regularDescriptor = currentBaseFont.fontDescriptor.withSymbolicTraits(
+            currentBaseFont.fontDescriptor.symbolicTraits.subtracting(.traitBold).subtracting(.traitItalic)
+        ) ?? currentBaseFont.fontDescriptor
+        let baseFont = UIFont(descriptor: regularDescriptor, size: currentBaseFont.pointSize)
+        let baseColor = UIColor.label
+
+        let mutable = NSMutableAttributedString(attributedString: source)
+        var fullRange = NSRange(location: 0, length: mutable.length)
+        guard fullRange.length > 0 else { return source }
+
+        let planRegex = try? NSRegularExpression(pattern: "\\n{3,}(?=Plan:)", options: [.caseInsensitive])
+        let normalizedString = NSMutableString(string: mutable.string)
+        planRegex?.replaceMatches(in: normalizedString, options: [], range: fullRange, withTemplate: "\n\n")
+        mutable.replaceCharacters(in: NSRange(location: 0, length: mutable.length), with: normalizedString as String)
+        fullRange = NSRange(location: 0, length: mutable.length)
+
+        mutable.enumerateAttributes(in: fullRange, options: []) { attrs, range, _ in
+            mutable.addAttribute(.font, value: baseFont, range: range)
+            mutable.addAttribute(.foregroundColor, value: baseColor, range: range)
+
+            if attrs[.backgroundColor] != nil {
+                mutable.removeAttribute(.backgroundColor, range: range)
+            }
+            if attrs[.link] != nil {
+                mutable.removeAttribute(.link, range: range)
+            }
+            if attrs[.strikethroughStyle] != nil {
+                mutable.removeAttribute(.strikethroughStyle, range: range)
+            }
+            if attrs[.underlineStyle] != nil {
+                mutable.removeAttribute(.underlineStyle, range: range)
+            }
+        }
+
+        let normalizedNSString = mutable.string as NSString
+        let hasAssessmentOrPlanHeadings =
+            normalizedNSString.range(of: "Assessment:", options: .caseInsensitive).location != NSNotFound ||
+            normalizedNSString.range(of: "Plan:", options: .caseInsensitive).location != NSNotFound
+
+        let bodyIndent: CGFloat = 16
+        let bulletIndent = ceil(("• " as NSString).size(withAttributes: [.font: baseFont]).width)
+        let numberIndent = ceil(("1. " as NSString).size(withAttributes: [.font: baseFont]).width)
+
+        var paragraphLocation = 0
+        while paragraphLocation < mutable.length {
+            let paragraphRange = normalizedNSString.paragraphRange(for: NSRange(location: paragraphLocation, length: 0))
+            let paragraphText = normalizedNSString.substring(with: paragraphRange)
+            let trimmedParagraph = paragraphText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            let existingStyle = mutable.attribute(.paragraphStyle, at: paragraphRange.location, effectiveRange: nil) as? NSParagraphStyle
+            let style = (existingStyle?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+
+            style.firstLineHeadIndent = hasAssessmentOrPlanHeadings ? bodyIndent : 0
+            style.headIndent = hasAssessmentOrPlanHeadings ? bodyIndent : 0
+            style.tailIndent = 0
+            style.paragraphSpacing = 0
+            style.paragraphSpacingBefore = 0
+            style.lineSpacing = 0
+
+            if trimmedParagraph.range(of: "^\\d+\\.\\s", options: .regularExpression) != nil {
+                if hasAssessmentOrPlanHeadings {
+                    style.firstLineHeadIndent = bodyIndent * 2
+                    style.headIndent = (bodyIndent * 2) + numberIndent
+                } else {
+                    style.firstLineHeadIndent = bodyIndent
+                    style.headIndent = bodyIndent + numberIndent
+                }
+            } else if trimmedParagraph.hasPrefix("• ") {
+                if hasAssessmentOrPlanHeadings {
+                    style.firstLineHeadIndent = bodyIndent * 2
+                    style.headIndent = (bodyIndent * 2) + bulletIndent
+                } else {
+                    style.firstLineHeadIndent = bodyIndent
+                    style.headIndent = bodyIndent + bulletIndent
+                }
+            }
+
+            mutable.addAttribute(.paragraphStyle, value: style, range: paragraphRange)
+
+            if trimmedParagraph.caseInsensitiveCompare("Assessment:") == .orderedSame ||
+                trimmedParagraph.caseInsensitiveCompare("Plan:") == .orderedSame {
+                style.firstLineHeadIndent = 0
+                style.headIndent = 0
+                mutable.addAttribute(.paragraphStyle, value: style, range: paragraphRange)
+
+                let headingText = trimmedParagraph as NSString
+                let headingRange = NSRange(location: paragraphRange.location, length: headingText.length)
+                let headingTraits = baseFont.fontDescriptor.symbolicTraits.union(.traitBold)
+                let headingFont = UIFont(
+                    descriptor: baseFont.fontDescriptor.withSymbolicTraits(headingTraits) ?? baseFont.fontDescriptor,
+                    size: baseFont.pointSize
+                )
+                mutable.addAttribute(.font, value: headingFont, range: headingRange)
+                mutable.addAttribute(.foregroundColor, value: baseColor, range: headingRange)
+            }
+
+            paragraphLocation = paragraphRange.location + paragraphRange.length
+        }
+
+        return mutable
+    }
     func exportLibraryJSON() throws -> Data {
         try JSONEncoder.pretty.encode(entries)
     }
@@ -512,7 +632,7 @@ final class AppStore: ObservableObject {
     }
 
     func importEyeBraryLibraryPackage(from packageURL: URL, merge: Bool) throws {
-        let imported = try importEntriesFromEyeBraryLibraryPackage(at: packageURL)
+        let imported = try importEntriesFromEyeBraryLibraryPackage(at: packageURL).map(normalizedImportedEntryIfNeeded)
 
         if merge {
             var map = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0) })
@@ -537,7 +657,7 @@ final class AppStore: ObservableObject {
 
     func importLibraryJSON(_ data: Data, merge: Bool) throws {
         let decoded = try JSONDecoder.standard.decode([LibraryEntry].self, from: data)
-        let incoming = normalizeImportedEntries(decoded)
+        let incoming = normalizeImportedEntries(decoded).map(normalizedImportedEntryIfNeeded)
 
         if merge {
             var map = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0) })
