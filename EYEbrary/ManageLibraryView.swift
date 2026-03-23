@@ -459,7 +459,9 @@ private struct ManageEntryDetail: View {
     @State private var originalCategory: EntryCategory = .general
     @State private var originalIsFavorite: Bool = false
     @State private var originalIsVisible: Bool = true
-
+    @State private var shareItem: ShareItem? = nil
+    @State private var exportErrorMessage: String? = nil
+    
     @StateObject private var richTextCommands = RichTextEditorCommands()
 
     private var bodyFieldLabel: String {
@@ -511,43 +513,59 @@ private struct ManageEntryDetail: View {
 
                 Spacer()
 
-                if isEditing {
-                    Button(hasUnsavedChanges ? "Save" : "Done") {
-                        commitEdits()
-                        isEditing = false
-                        isEditingExternal = false
-                        hasUnsavedChangesExternal = false
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(!canSaveEntry)
+                ZStack(alignment: .topTrailing) {
+                    Group {
+                        if isEditing {
+                            HStack(spacing: 8) {
+                                Button(hasUnsavedChanges ? "Save" : "Done") {
+                                    commitEdits()
+                                    isEditing = false
+                                    isEditingExternal = false
+                                    hasUnsavedChangesExternal = false
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(!canSaveEntry)
 
-                    Button("Cancel") {
-                        if isDraftNewEntry {
-                            store.entries.removeAll { $0.id == entry.id }
-                            if selectedID == entry.id {
-                                selectedID = nil
+                                Button("Cancel") {
+                                    if isDraftNewEntry {
+                                        store.entries.removeAll { $0.id == entry.id }
+                                        if selectedID == entry.id {
+                                            selectedID = nil
+                                        }
+                                        draftNewEntryID = nil
+                                        autoStartEditingEntryID = nil
+                                        isEditing = false
+                                        isEditingExternal = false
+                                        hasUnsavedChangesExternal = false
+                                    } else {
+                                        discardEdits()
+                                        isEditing = false
+                                        isEditingExternal = false
+                                        hasUnsavedChangesExternal = false
+                                    }
+                                }
+                                .buttonStyle(.bordered)
                             }
-                            draftNewEntryID = nil
-                            autoStartEditingEntryID = nil
-                            isEditing = false
-                            isEditingExternal = false
-                            hasUnsavedChangesExternal = false
                         } else {
-                            discardEdits()
-                            isEditing = false
-                            isEditingExternal = false
-                            hasUnsavedChangesExternal = false
+                            Button("Edit") {
+                                beginEditing()
+                                isEditing = true
+                                isEditingExternal = true
+                                hasUnsavedChangesExternal = false
+                            }
+                            .buttonStyle(.bordered)
                         }
                     }
-                    .buttonStyle(.bordered)
-                } else {
-                    Button("Edit") {
-                        beginEditing()
-                        isEditing = true
-                        isEditingExternal = true
-                        hasUnsavedChangesExternal = false
+
+                    Button {
+                        exportCurrentEntry()
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(Color.accentColor)
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.plain)
+                    .offset(x: -17, y: -50)
                 }
             }
             .padding(.horizontal)
@@ -706,7 +724,7 @@ private struct ManageEntryDetail: View {
                 }
                 .padding(.horizontal)
             }
-
+            
             Spacer()
         }
         .alert("Delete entry?", isPresented: $showDeleteConfirm) {
@@ -719,6 +737,19 @@ private struct ManageEntryDetail: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This will permanently delete the library entry.")
+        }
+        .sheet(item: $shareItem) { item in
+            ActivityView(items: [item.url])
+        }
+        .alert("Export failed", isPresented: Binding(
+            get: { exportErrorMessage != nil },
+            set: { if !$0 { exportErrorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) {
+                exportErrorMessage = nil
+            }
+        } message: {
+            Text(exportErrorMessage ?? "Unable to export this entry.")
         }
         .onAppear {
             loadIfNeeded()
@@ -763,6 +794,53 @@ private struct ManageEntryDetail: View {
             saveMetadataChangesIfNeeded()
         }
     }
+    private func exportCurrentEntry() {
+        do {
+            let data = try exportEntryAsJSON(exportSnapshot)
+            let filename = sanitizedExportFilename(from: exportSnapshot.title)
+
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent(filename)
+                .appendingPathExtension("json")
+
+            try data.write(to: url, options: .atomic)
+            shareItem = ShareItem(url: url)
+        } catch {
+            exportErrorMessage = error.localizedDescription
+        }
+    }
+    private var exportSnapshot: LibraryEntry {
+        var snapshot = entry
+        snapshot.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        snapshot.setAttributedBody(bodyAttributed)
+        snapshot.category = category
+        snapshot.isFavorite = isFavorite
+        snapshot.isVisible = isVisible
+        return snapshot
+    }
+
+    private func sanitizedExportFilename(from title: String) -> String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let cleaned = trimmed.replacingOccurrences(
+            of: #"[^A-Za-z0-9 _-]"#,
+            with: "",
+            options: .regularExpression
+        )
+
+        let collapsedWhitespace = cleaned.replacingOccurrences(
+            of: #"\s+"#,
+            with: " ",
+            options: .regularExpression
+        )
+
+        let final = collapsedWhitespace
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: " ", with: "_")
+
+        return final.isEmpty ? "LibraryEntry" : final
+    }
+
     private func startEditingIfRequested() {
         guard autoStartEditingEntryID == entry.id else { return }
         beginEditing()
