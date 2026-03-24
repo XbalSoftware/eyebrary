@@ -431,8 +431,112 @@ final class AppStore: ObservableObject {
         entries[idx].updatedAt = Date()
     }
 
+
     func entry(id: UUID) -> LibraryEntry? {
         entries.first(where: { $0.id == id })
+    }
+
+    // MARK: - Category Management
+
+    func sortedCategories() -> [CategoryItem] {
+        categories.sorted { lhs, rhs in
+            if lhs.order != rhs.order { return lhs.order < rhs.order }
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
+    }
+
+    func addCategory(named rawName: String) {
+        let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard !categories.contains(where: { $0.name.compare(trimmed, options: .caseInsensitive) == .orderedSame }) else { return }
+
+        let newCategory = CategoryItem(
+            id: makeUniqueCategoryID(from: trimmed),
+            name: trimmed,
+            order: (categories.map(\.order).max() ?? -1) + 1
+        )
+        categories.append(newCategory)
+    }
+
+    func renameCategory(id: EntryCategory, to rawName: String) {
+        let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard id != .general else { return }
+        guard !trimmed.isEmpty else { return }
+        guard let index = categories.firstIndex(where: { $0.id == id }) else { return }
+        guard !categories.contains(where: { $0.id != id && $0.name.compare(trimmed, options: .caseInsensitive) == .orderedSame }) else { return }
+
+        categories[index].name = trimmed
+    }
+
+    func deleteCategory(id: EntryCategory) {
+        guard id != .general else { return }
+        guard categories.contains(where: { $0.id == id }) else { return }
+
+        categories.removeAll { $0.id == id }
+
+        for index in entries.indices where entries[index].category == id {
+            entries[index].category = .general
+            entries[index].updatedAt = Date()
+        }
+
+        normalizeCategoryOrdering()
+    }
+
+    func applyCategoryOrder(_ orderedIDs: [EntryCategory]) {
+        for (index, id) in orderedIDs.enumerated() {
+            if let categoryIndex = categories.firstIndex(where: { $0.id == id }) {
+                categories[categoryIndex].order = index
+            }
+        }
+
+        normalizeCategoryOrdering()
+    }
+
+    private func normalizeCategoryOrdering() {
+        let ordered = categories.sorted { lhs, rhs in
+            if lhs.order != rhs.order { return lhs.order < rhs.order }
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
+
+        categories = ordered.enumerated().map { index, item in
+            var copy = item
+            copy.order = index
+            return copy
+        }
+    }
+
+    private func makeUniqueCategoryID(from rawName: String) -> EntryCategory {
+        let base = slugifiedCategoryID(from: rawName)
+        var candidate = base
+        var suffix = 1
+
+        while categories.contains(where: { $0.id.caseInsensitiveCompare(candidate) == .orderedSame }) || candidate == .general {
+            candidate = "\(base)-\(suffix)"
+            suffix += 1
+        }
+
+        return candidate
+    }
+
+    private func slugifiedCategoryID(from rawName: String) -> EntryCategory {
+        let lowered = rawName.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let collapsedWhitespace = lowered.replacingOccurrences(
+            of: #"\s+"#,
+            with: "-",
+            options: .regularExpression
+        )
+        let cleaned = collapsedWhitespace.replacingOccurrences(
+            of: #"[^a-z0-9-]"#,
+            with: "",
+            options: .regularExpression
+        )
+        let collapsedDashes = cleaned.replacingOccurrences(
+            of: #"-+"#,
+            with: "-",
+            options: .regularExpression
+        )
+        let trimmed = collapsedDashes.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return trimmed.isEmpty ? "category" : trimmed
     }
 
     // MARK: - Import / Export

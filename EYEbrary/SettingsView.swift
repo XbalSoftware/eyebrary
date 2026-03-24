@@ -51,6 +51,16 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section("Categories") {
+                NavigationLink("Edit categories") {
+                    CategoryManagerView()
+                }
+
+                Text("Categories control the chips shown at the top of New Report and Manage Library.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Letterhead") {
                 Button("Import Letterhead PDF") {
                     pendingImportKind = .letterhead
@@ -314,5 +324,121 @@ struct SettingsView: View {
         } catch {
             importErrorMessage = error.localizedDescription
         }
+    }
+}
+
+private struct CategoryManagerView: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var isEditing = false
+    @State private var editingCategoryNames: [EntryCategory: String] = [:]
+    @State private var showAddCategoryPrompt = false
+    @State private var pendingNewCategoryName = ""
+    @State private var pendingDeleteCategory: CategoryItem?
+
+    var body: some View {
+        List {
+            ForEach(store.sortedCategories(), id: \.id) { category in
+                HStack(spacing: 12) {
+                    if isEditing, category.id != .general {
+                        TextField(
+                            "Category Name",
+                            text: Binding(
+                                get: { editingCategoryNames[category.id] ?? category.name },
+                                set: { editingCategoryNames[category.id] = $0 }
+                            )
+                        )
+                        .textInputAutocapitalization(.words)
+                        .autocorrectionDisabled()
+                    } else {
+                        Text(category.name)
+                            .foregroundStyle(category.id == .general ? .secondary : .primary)
+                    }
+
+                    Spacer()
+
+                    if isEditing, category.id != .general {
+                        Button(role: .destructive) {
+                            pendingDeleteCategory = category
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+            }
+        }
+        .navigationTitle("Categories")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button(isEditing ? "Done" : "Edit") {
+                    if isEditing {
+                        commitCategoryRenames()
+                    }
+                    isEditing.toggle()
+                }
+            }
+
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    pendingNewCategoryName = ""
+                    showAddCategoryPrompt = true
+                } label: {
+                    Image(systemName: "plus")
+                }
+            }
+        }
+        .alert("Add Category", isPresented: $showAddCategoryPrompt) {
+            TextField("Category Name", text: $pendingNewCategoryName)
+            Button("Add") {
+                store.addCategory(named: pendingNewCategoryName)
+                pendingNewCategoryName = ""
+            }
+            Button("Cancel", role: .cancel) {
+                pendingNewCategoryName = ""
+            }
+        } message: {
+            Text("Create a new global category.")
+        }
+        .alert(
+            "Delete category?",
+            isPresented: Binding(
+                get: { pendingDeleteCategory != nil },
+                set: { if !$0 { pendingDeleteCategory = nil } }
+            ),
+            presenting: pendingDeleteCategory
+        ) { category in
+            Button("Delete", role: .destructive) {
+                store.deleteCategory(id: category.id)
+                editingCategoryNames[category.id] = nil
+                pendingDeleteCategory = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingDeleteCategory = nil
+            }
+        } message: { category in
+            let affectedCount = store.entries.filter { $0.category == category.id }.count
+            Text(deleteConfirmationMessage(for: category.name, affectedCount: affectedCount))
+        }
+    }
+
+    private func commitCategoryRenames() {
+        for category in store.sortedCategories() where category.id != .general {
+            if let proposedName = editingCategoryNames[category.id] {
+                store.renameCategory(id: category.id, to: proposedName)
+            }
+        }
+        editingCategoryNames.removeAll()
+    }
+
+    private func deleteConfirmationMessage(for categoryName: String, affectedCount: Int) -> String {
+        if affectedCount == 0 {
+            return "Delete \"\(categoryName)\"?"
+        }
+
+        let entryWord = affectedCount == 1 ? "entry is" : "entries are"
+        return "Delete \"\(categoryName)\"? \(affectedCount) \(entryWord) currently assigned to this category and will be reassigned to General."
     }
 }
