@@ -48,6 +48,7 @@ struct SettingsView: View {
     @State private var resetSuccessMessage: String?
     @State private var activeImportKind: ActiveImportKind?
     @State private var pendingImportKind: ActiveImportKind?
+    @State private var letterheadImportErrorMessage: String?
 
     var body: some View {
         Form {
@@ -106,6 +107,49 @@ struct SettingsView: View {
             }
         }
         .navigationTitle("Settings")
+        .fileImporter(
+            isPresented: Binding(
+                get: { activeImportKind == .letterhead },
+                set: { if !$0 { activeImportKind = nil } }
+            ),
+            allowedContentTypes: [.pdf],
+            allowsMultipleSelection: false
+        ) { result in
+            let importKind = pendingImportKind
+            activeImportKind = nil
+
+            do {
+                let urls = try result.get()
+                guard let url = urls.first else { return }
+                let didStartAccessing = url.startAccessingSecurityScopedResource()
+                defer {
+                    if didStartAccessing {
+                        url.stopAccessingSecurityScopedResource()
+                    }
+                }
+
+                switch importKind {
+                case .letterhead:
+                    try store.addLetterhead(from: url)
+                    pendingImportKind = nil
+                case .library, .none:
+                    pendingImportKind = nil
+                }
+            } catch {
+                letterheadImportErrorMessage = error.localizedDescription
+                pendingImportKind = nil
+            }
+        }
+        .alert("Import Failed", isPresented: Binding(
+            get: { letterheadImportErrorMessage != nil },
+            set: { if !$0 { letterheadImportErrorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) {
+                letterheadImportErrorMessage = nil
+            }
+        } message: {
+            Text(letterheadImportErrorMessage ?? "Unknown error")
+        }
         .alert("Reset everything?", isPresented: $showResetConfirm) {
             Button("Reset", role: .destructive) {
                 store.resetToFactoryDefaults()
