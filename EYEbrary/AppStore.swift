@@ -60,9 +60,10 @@ struct LibraryEntry: Identifiable, Codable, Equatable {
 
     var createdAt: Date = Date()
     var updatedAt: Date = Date()
+    var lastImportedAt: Date? = nil
 
     enum CodingKeys: String, CodingKey {
-        case id, title, body, bodyRTFData, assessment, plan, category, defaultStyle, isFavorite, isPinned, isVisible, order, createdAt, updatedAt, level
+        case id, title, body, bodyRTFData, assessment, plan, category, defaultStyle, isFavorite, isPinned, isVisible, order, createdAt, updatedAt, lastImportedAt, level
     }
 
     init(
@@ -75,7 +76,8 @@ struct LibraryEntry: Identifiable, Codable, Equatable {
         isVisible: Bool = true,
         order: Int? = nil,
         createdAt: Date = Date(),
-        updatedAt: Date = Date()
+        updatedAt: Date = Date(),
+        lastImportedAt: Date? = nil
     ) {
         self.id = id
         self.title = title
@@ -87,6 +89,7 @@ struct LibraryEntry: Identifiable, Codable, Equatable {
         self.order = order
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.lastImportedAt = lastImportedAt
     }
 
     init(from decoder: Decoder) throws {
@@ -119,6 +122,7 @@ struct LibraryEntry: Identifiable, Codable, Equatable {
         self.order = try c.decodeIfPresent(Int.self, forKey: .order)
         self.createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         self.updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
+        self.lastImportedAt = try c.decodeIfPresent(Date.self, forKey: .lastImportedAt)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -133,6 +137,7 @@ struct LibraryEntry: Identifiable, Codable, Equatable {
         try c.encodeIfPresent(order, forKey: .order)
         try c.encode(createdAt, forKey: .createdAt)
         try c.encode(updatedAt, forKey: .updatedAt)
+        try c.encodeIfPresent(lastImportedAt, forKey: .lastImportedAt)
     }
 }
 
@@ -305,6 +310,7 @@ struct EyeBraryLibraryManifestEntry: Codable, Equatable {
     var order: Int?
     var createdAt: Date
     var updatedAt: Date
+    var lastImportedAt: Date?
     var contentFile: String
 }
 
@@ -765,6 +771,14 @@ final class AppStore: ObservableObject {
             return copy
         }
     }
+    private func stampedImportedEntries(_ entries: [LibraryEntry], importedAt: Date) -> [LibraryEntry] {
+        entries.map { entry in
+            var copy = entry
+            copy.lastImportedAt = importedAt
+            return copy
+        }
+    }
+
     private func normalizedImportedEntryIfNeeded(_ entry: LibraryEntry) -> LibraryEntry {
         guard shouldNormalizeTextOnImport else { return entry }
 
@@ -919,6 +933,7 @@ final class AppStore: ObservableObject {
                 order: entry.order,
                 createdAt: entry.createdAt,
                 updatedAt: entry.updatedAt,
+                lastImportedAt: entry.lastImportedAt,
                 contentFile: relativePath
             )
         }
@@ -946,7 +961,11 @@ final class AppStore: ObservableObject {
     }
 
     func importEyeBraryLibraryPackage(from packageURL: URL, merge: Bool) throws {
-        let imported = try importEntriesFromEyeBraryLibraryPackage(at: packageURL).map(normalizedImportedEntryIfNeeded)
+        let importedAt = Date()
+        let imported = try stampedImportedEntries(
+            importEntriesFromEyeBraryLibraryPackage(at: packageURL),
+            importedAt: importedAt
+        ).map(normalizedImportedEntryIfNeeded)
 
         if merge {
             var map = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0) })
@@ -971,7 +990,11 @@ final class AppStore: ObservableObject {
 
     func importLibraryJSON(_ data: Data, merge: Bool) throws {
         let decoded = try JSONDecoder.standard.decode([LibraryEntry].self, from: data)
-        let incoming = normalizeImportedEntries(decoded).map(normalizedImportedEntryIfNeeded)
+        let importedAt = Date()
+        let incoming = stampedImportedEntries(
+            normalizeImportedEntries(decoded),
+            importedAt: importedAt
+        ).map(normalizedImportedEntryIfNeeded)
 
         if merge {
             var map = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0) })
@@ -1217,7 +1240,8 @@ final class AppStore: ObservableObject {
                 isVisible: item.isVisible,
                 order: item.order,
                 createdAt: item.createdAt,
-                updatedAt: item.updatedAt
+                updatedAt: item.updatedAt,
+                lastImportedAt: item.lastImportedAt
             )
         }
 

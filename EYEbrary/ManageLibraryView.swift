@@ -26,39 +26,31 @@ struct ManageLibraryView: View {
     @State private var autoStartEditingEntryID: UUID? = nil
     @State private var draftNewEntryID: UUID? = nil
     @State private var showDiscardChangesAlert: Bool = false
+    @State private var showRecentlyImportedSheet: Bool = false
+
+    private var currentSortMode: LibrarySortMode {
+        store.sortMode()
+    }
+
+    private var canManuallyReorder: Bool {
+        currentSortMode == .manual && query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     private var filtered: [LibraryEntry] {
         let base = store.entries.filter { matchesCategory($0, filter: categoryFilter) }
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        let list: [LibraryEntry]
+        let searchFiltered: [LibraryEntry]
         if q.isEmpty {
-            list = base.sorted { a, b in
-                let ao = a.order ?? Int.max
-                let bo = b.order ?? Int.max
-                if ao != bo { return ao < bo }
-                return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
-            }
+            searchFiltered = base
         } else {
-            list = base.filter {
+            searchFiltered = base.filter {
                 $0.title.localizedCaseInsensitiveContains(q) ||
                 $0.body.localizedCaseInsensitiveContains(q)
             }
-            .sorted { a, b in
-                let aTitleMatch = a.title.localizedCaseInsensitiveContains(q)
-                let bTitleMatch = b.title.localizedCaseInsensitiveContains(q)
-
-                if aTitleMatch != bTitleMatch {
-                    return aTitleMatch && !bTitleMatch
-                }
-
-                let ao = a.order ?? Int.max
-                let bo = b.order ?? Int.max
-                if ao != bo { return ao < bo }
-                return a.updatedAt > b.updatedAt
-            }
         }
-        return list
+
+        return sortedEntries(searchFiltered, query: q)
     }
 
     private var hiddenCount: Int {
@@ -78,6 +70,55 @@ struct ManageLibraryView: View {
         orderedCategories.filter { ( $0.id.isEmpty ? EntryCategory.general : $0.id ) != .general }
     }
 
+    private func sortedEntries(_ entries: [LibraryEntry], query: String) -> [LibraryEntry] {
+        entries.sorted { a, b in
+            if !query.isEmpty {
+                let aTitleMatch = a.title.localizedCaseInsensitiveContains(query)
+                let bTitleMatch = b.title.localizedCaseInsensitiveContains(query)
+                if aTitleMatch != bTitleMatch {
+                    return aTitleMatch && !bTitleMatch
+                }
+            }
+
+            switch currentSortMode {
+            case .manual:
+                let ao = a.order ?? Int.max
+                let bo = b.order ?? Int.max
+                if ao != bo { return ao < bo }
+                return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
+
+            case .alphabeticalAZ:
+                return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
+
+            case .alphabeticalZA:
+                return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedDescending
+
+            case .newestUpdated:
+                if a.updatedAt != b.updatedAt { return a.updatedAt > b.updatedAt }
+                return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
+
+            case .oldestUpdated:
+                if a.updatedAt != b.updatedAt { return a.updatedAt < b.updatedAt }
+                return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
+            }
+        }
+    }
+
+    private var sortModeDisplayName: String {
+        switch currentSortMode {
+        case .manual:
+            return "Manual"
+        case .alphabeticalAZ:
+            return "A–Z"
+        case .alphabeticalZA:
+            return "Z–A"
+        case .newestUpdated:
+            return "Newest"
+        case .oldestUpdated:
+            return "Oldest"
+        }
+    }
+
     var body: some View {
         NavigationSplitView {
             manageSidebar
@@ -92,6 +133,12 @@ struct ManageLibraryView: View {
         .navigationTitle("Manage Library")
         .onChange(of: store.activeLibraryID) { _, _ in
             selectedID = nil
+        }
+        .sheet(isPresented: $showRecentlyImportedSheet) {
+            NavigationStack {
+                RecentlyImportedSheet()
+            }
+            .environmentObject(store)
         }
         .alert("Delete entry?", isPresented: $showDeleteEntryConfirm) {
             Button("Delete", role: .destructive) {
@@ -234,6 +281,21 @@ struct ManageLibraryView: View {
             .buttonStyle(.plain)
             .frame(width: 24, alignment: .center)
             .padding(.trailing, 6)
+
+            Menu {
+                Button {
+                    showRecentlyImportedSheet = true
+                } label: {
+                    Label("Recently Imported", systemImage: "clock.arrow.circlepath")
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(Color.secondary)
+            }
+            .buttonStyle(.plain)
+            .frame(width: 24, alignment: .center)
+            .padding(.trailing, 6)
         }
     }
 
@@ -284,9 +346,75 @@ struct ManageLibraryView: View {
                 }
             } label: {
                 HStack(spacing: 6) {
-                    Text("Category:")
-                        .foregroundStyle(.secondary)
                     Text(categoryFilter.displayName(using: store))
+                        .lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .font(.footnote)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.secondary.opacity(0.12))
+                )
+            }
+            .buttonStyle(.plain)
+
+            Menu {
+                Button {
+                    store.setSortMode(.manual)
+                } label: {
+                    if currentSortMode == .manual {
+                        Label("Manual", systemImage: "checkmark")
+                    } else {
+                        Text("Manual")
+                    }
+                }
+
+                Button {
+                    store.setSortMode(.alphabeticalAZ)
+                } label: {
+                    if currentSortMode == .alphabeticalAZ {
+                        Label("A–Z", systemImage: "checkmark")
+                    } else {
+                        Text("A–Z")
+                    }
+                }
+
+                Button {
+                    store.setSortMode(.alphabeticalZA)
+                } label: {
+                    if currentSortMode == .alphabeticalZA {
+                        Label("Z–A", systemImage: "checkmark")
+                    } else {
+                        Text("Z–A")
+                    }
+                }
+
+                Button {
+                    store.setSortMode(.newestUpdated)
+                } label: {
+                    if currentSortMode == .newestUpdated {
+                        Label("Newest Updated", systemImage: "checkmark")
+                    } else {
+                        Text("Newest Updated")
+                    }
+                }
+
+                Button {
+                    store.setSortMode(.oldestUpdated)
+                } label: {
+                    if currentSortMode == .oldestUpdated {
+                        Label("Oldest Updated", systemImage: "checkmark")
+                    } else {
+                        Text("Oldest Updated")
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Text(sortModeDisplayName)
                         .lineLimit(1)
                     Image(systemName: "chevron.up.chevron.down")
                         .font(.footnote)
@@ -352,6 +480,7 @@ struct ManageLibraryView: View {
                             ? Color.accentColor.opacity(0.16)
                             : Color.clear
                         )
+                        .moveDisabled(!canManuallyReorder)
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             Button(role: .destructive) {
                                 pendingDeleteEntryID = t.id
@@ -405,9 +534,7 @@ struct ManageLibraryView: View {
     }
 
     private func handleMove(from source: IndexSet, to destination: Int) {
-        // Only allow reordering when not searching.
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard q.isEmpty else { return }
+        guard canManuallyReorder else { return }
 
         var ids = filtered.map { $0.id }
         ids.move(fromOffsets: source, toOffset: destination)
@@ -465,6 +592,229 @@ struct ManageLibraryView: View {
             t.updatedAt = Date()
             store.updateEntry(t)
         }
+    }
+}
+
+private struct ImportedEntryGroup: Identifiable {
+    let id: Date
+    let importedAt: Date
+    var entries: [LibraryEntry]
+}
+
+private struct RecentlyImportedSheet: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var isSelecting = false
+    @State private var selectedEntryIDs: Set<UUID> = []
+    @State private var showCategoryDialog = false
+    @State private var showDeleteConfirmation = false
+
+    private var importedGroups: [ImportedEntryGroup] {
+        let importedEntries = store.entries
+            .filter { $0.lastImportedAt != nil }
+            .sorted { a, b in
+                guard let aDate = a.lastImportedAt, let bDate = b.lastImportedAt else { return false }
+                if aDate != bDate { return aDate > bDate }
+                return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
+            }
+
+        var groups: [ImportedEntryGroup] = []
+        for entry in importedEntries {
+            guard let importedAt = entry.lastImportedAt else { continue }
+            if let lastIndex = groups.indices.last, groups[lastIndex].importedAt == importedAt {
+                groups[lastIndex].entries.append(entry)
+            } else {
+                groups.append(ImportedEntryGroup(id: importedAt, importedAt: importedAt, entries: [entry]))
+            }
+        }
+        return groups
+    }
+
+    var body: some View {
+        Group {
+            if importedGroups.isEmpty {
+                ContentUnavailableView(
+                    "No imported entries",
+                    systemImage: "clock.arrow.circlepath",
+                    description: Text("Imported entries from the active library will appear here.")
+                )
+            } else {
+                List {
+                    ForEach(importedGroups) { group in
+                        Section {
+                            ForEach(group.entries) { entry in
+                                importedEntryRow(entry)
+                            }
+                        } header: {
+                            HStack(alignment: .top, spacing: 12) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(importedBatchHeaderText(group.importedAt))
+                                        .font(.subheadline.weight(.semibold))
+                                    Text("\(group.entries.count) entr\(group.entries.count == 1 ? "y" : "ies")")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+
+                                Spacer()
+
+                                if isSelecting {
+                                    Button(allEntriesSelected(in: group) ? "Deselect Batch" : "Select All") {
+                                        toggleBatchSelection(group)
+                                    }
+                                    .font(.caption)
+                                    .buttonStyle(.borderless)
+                                }
+                            }
+                            .textCase(nil)
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle("Recently Imported")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Done") {
+                    dismiss()
+                }
+            }
+
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                if isSelecting {
+                    Button("Category") {
+                        showCategoryDialog = true
+                    }
+                    .disabled(selectedEntryIDs.isEmpty)
+
+                    Button("Delete", role: .destructive) {
+                        showDeleteConfirmation = true
+                    }
+                    .disabled(selectedEntryIDs.isEmpty)
+
+                    Button("Cancel") {
+                        isSelecting = false
+                        selectedEntryIDs.removeAll()
+                    }
+                } else {
+                    Button("Select") {
+                        isSelecting = true
+                    }
+                }
+            }
+        }
+        .confirmationDialog("Apply Category", isPresented: $showCategoryDialog, titleVisibility: .visible) {
+            ForEach(store.sortedCategories(), id: \.id) { item in
+                let categoryID: EntryCategory = item.id.isEmpty ? .general : item.id
+                Button(item.name) {
+                    applyCategory(categoryID)
+                }
+            }
+
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Apply a category to \(selectedEntryIDs.count) selected entr\(selectedEntryIDs.count == 1 ? "y" : "ies").")
+        }
+        .alert("Delete selected entries?", isPresented: $showDeleteConfirmation) {
+            Button("Delete", role: .destructive) {
+                deleteSelectedEntries()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Delete \(selectedEntryIDs.count) selected entr\(selectedEntryIDs.count == 1 ? "y" : "ies") from the active library?")
+        }
+    }
+
+    @ViewBuilder
+    private func importedEntryRow(_ entry: LibraryEntry) -> some View {
+        HStack(spacing: 12) {
+            if isSelecting {
+                Image(systemName: selectedEntryIDs.contains(entry.id) ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(selectedEntryIDs.contains(entry.id) ? Color.accentColor : Color.secondary)
+                    .font(.system(size: 20, weight: .regular))
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(entry.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Untitled Entry" : entry.title)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+
+                HStack(spacing: 6) {
+                    Text(categoryName(for: entry.category))
+                    Text("•")
+                    Text(importedRowTimestampText(entry.lastImportedAt))
+                }
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard isSelecting else { return }
+            toggleSelection(for: entry.id)
+        }
+    }
+
+    private func allEntriesSelected(in group: ImportedEntryGroup) -> Bool {
+        !group.entries.isEmpty && group.entries.allSatisfy { selectedEntryIDs.contains($0.id) }
+    }
+
+    private func toggleBatchSelection(_ group: ImportedEntryGroup) {
+        if allEntriesSelected(in: group) {
+            for entry in group.entries {
+                selectedEntryIDs.remove(entry.id)
+            }
+        } else {
+            for entry in group.entries {
+                selectedEntryIDs.insert(entry.id)
+            }
+        }
+    }
+
+    private func toggleSelection(for id: UUID) {
+        if selectedEntryIDs.contains(id) {
+            selectedEntryIDs.remove(id)
+        } else {
+            selectedEntryIDs.insert(id)
+        }
+    }
+
+    private func deleteSelectedEntries() {
+        store.entries.removeAll { selectedEntryIDs.contains($0.id) }
+        selectedEntryIDs.removeAll()
+        isSelecting = false
+    }
+
+    private func applyCategory(_ category: EntryCategory) {
+        let now = Date()
+        for id in selectedEntryIDs {
+            guard var entry = store.entry(id: id) else { continue }
+            entry.category = category
+            entry.updatedAt = now
+            store.updateEntry(entry)
+        }
+        selectedEntryIDs.removeAll()
+        isSelecting = false
+    }
+
+    private func categoryName(for category: EntryCategory) -> String {
+        store.sortedCategories().first(where: { ($0.id.isEmpty ? EntryCategory.general : $0.id) == category })?.name ?? "General"
+    }
+
+    private func importedBatchHeaderText(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "d MMM yyyy, h:mm:ss a"
+        return formatter.string(from: date)
+    }
+
+    private func importedRowTimestampText(_ date: Date?) -> String {
+        guard let date else { return "Unknown import time" }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "d MMM yyyy, h:mm:ss a"
+        return formatter.string(from: date)
     }
 }
 private struct ManageEntryDetail: View {
