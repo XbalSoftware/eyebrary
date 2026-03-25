@@ -84,6 +84,9 @@ struct NewReportView: View {
             detail
         }
         .navigationTitle("EYEbrary")
+        .onChange(of: store.activeLibraryID) { _, _ in
+            selectedEntryID = nil
+        }
         .sheet(item: $shareItem) { item in
             ActivityView(items: [item.url])
         }
@@ -123,7 +126,7 @@ struct NewReportView: View {
 
     private var sidebar: some View {
         VStack(spacing: 12) {
-            HStack {
+            HStack(spacing: 12) {
                 Button {
                     favoritesOnly.toggle()
                 } label: {
@@ -133,13 +136,44 @@ struct NewReportView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(favoritesOnly ? "Showing favorites" : "Show favorites")
+                .frame(width: 24, alignment: .center)
+                .padding(.leading, 6)
 
-                Spacer()
+                Menu {
+                    ForEach(store.sortedLibraries()) { library in
+                        Button {
+                            store.setActiveLibrary(id: library.id)
+                        } label: {
+                            if library.id == store.activeLibrary?.id {
+                                Label(library.name, systemImage: "checkmark")
+                            } else {
+                                Text(library.name)
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Text(store.activeLibraryName)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(nil)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .center)
 
-                Text("Library")
-                    .font(.system(size: 20, weight: .bold))
-
-                Spacer()
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: 280)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(Color.secondary.opacity(0.12))
+                    )
+                }
+                .buttonStyle(.plain)
 
                 Button {
                     addOtherEntry()
@@ -149,8 +183,9 @@ struct NewReportView: View {
                         .font(.system(size: 18, weight: .semibold))
                 }
                 .buttonStyle(.plain)
+                .frame(width: 24, alignment: .center)
+                .padding(.trailing, 6)
             }
-            .padding(.horizontal)
             .padding(.top, 8)
 
             if favoritesOnly {

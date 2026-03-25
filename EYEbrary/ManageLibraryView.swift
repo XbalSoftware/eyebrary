@@ -90,6 +90,9 @@ struct ManageLibraryView: View {
             manageDetail
         }
         .navigationTitle("Manage Library")
+        .onChange(of: store.activeLibraryID) { _, _ in
+            selectedID = nil
+        }
         .alert("Delete entry?", isPresented: $showDeleteEntryConfirm) {
             Button("Delete", role: .destructive) {
                 if let id = pendingDeleteEntryID,
@@ -176,13 +179,44 @@ struct ManageLibraryView: View {
                     .foregroundStyle(favoriteEditMode ? Color.yellow : Color.secondary)
             }
             .buttonStyle(.plain)
+            .frame(width: 24, alignment: .center)
+            .padding(.leading, 6)
 
-            Spacer()
+            Menu {
+                ForEach(store.sortedLibraries()) { library in
+                    Button {
+                        store.setActiveLibrary(id: library.id)
+                    } label: {
+                        if library.id == store.activeLibrary?.id {
+                            Label(library.name, systemImage: "checkmark")
+                        } else {
+                            Text(library.name)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Text(store.activeLibraryName)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .center)
 
-            Text("Library")
-                .font(.system(size: 20, weight: .bold))
-
-            Spacer()
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .frame(maxWidth: 280)
+                .background(
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color.secondary.opacity(0.12))
+                )
+            }
+            .buttonStyle(.plain)
 
             Button {
                 if detailIsEditing && detailHasUnsavedChanges {
@@ -198,9 +232,9 @@ struct ManageLibraryView: View {
                     .font(.system(size: 18, weight: .semibold))
             }
             .buttonStyle(.plain)
+            .frame(width: 24, alignment: .center)
+            .padding(.trailing, 6)
         }
-        .padding(.horizontal)
-        .padding(.top, 8)
     }
 
 

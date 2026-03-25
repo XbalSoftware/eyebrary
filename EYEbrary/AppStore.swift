@@ -10,10 +10,33 @@ extension EntryCategory {
     static let general: EntryCategory = "general"
 }
 
+
 struct CategoryItem: Identifiable, Codable, Equatable {
     var id: String
     var name: String
     var order: Int
+}
+
+enum LibrarySortMode: String, Codable, CaseIterable {
+    case manual
+    case alphabeticalAZ
+    case alphabeticalZA
+    case newestUpdated
+    case oldestUpdated
+}
+
+struct LibraryCollection: Identifiable, Codable, Equatable {
+    var id: UUID = UUID()
+    var name: String
+    var entries: [LibraryEntry]
+    var sortMode: LibrarySortMode = .manual
+    var createdAt: Date = Date()
+    var updatedAt: Date = Date()
+}
+
+struct LibrariesState: Codable, Equatable {
+    var libraries: [LibraryCollection]
+    var activeLibraryID: UUID?
 }
 
 enum LegacyTemplateLevel: String, Codable {
@@ -309,9 +332,36 @@ extension JSONDecoder {
 
 @MainActor
 final class AppStore: ObservableObject {
-    // Entries
+    // Libraries / Entries
+    @Published var libraries: [LibraryCollection] = [] {
+        didSet {
+            guard !isSynchronizingLibraryState else {
+                persistLibraries()
+                return
+            }
+
+            if activeLibraryIndex == nil {
+                activeLibraryID = libraries.first?.id
+            }
+
+            persistLibraries()
+            syncEntriesFromActiveLibrary()
+        }
+    }
+
+    @Published var activeLibraryID: UUID? = nil {
+        didSet {
+            guard !isSynchronizingLibraryState else { return }
+            persistLibraries()
+            syncEntriesFromActiveLibrary()
+        }
+    }
+
     @Published var entries: [LibraryEntry] = [] {
-        didSet { persistTemplates() }
+        didSet {
+            guard !isSynchronizingLibraryState else { return }
+            syncActiveLibraryFromEntries()
+        }
     }
 
     @Published var categories: [CategoryItem] = [] {
@@ -329,10 +379,13 @@ final class AppStore: ObservableObject {
     @Published var selectedLetterheadName: String? = nil {
         didSet { persistLetterheads() }
     }
+
     var history: [SavedPlan] {
         get { plans }
         set { plans = newValue }
     }
+
+    private let librariesKey = "EYEbrary.libraries.v1"
     private let templatesKey = "EYEbrary.conditionTemplates.v1"
     private let categoriesKey = "EYEbrary.categories.v1"
     private let plansKey = "EYEbrary.savedPlans.v1"
@@ -341,6 +394,8 @@ final class AppStore: ObservableObject {
     private let bundledDefaultLibraryName = "Default Library"
     private let bundledDefaultLibraryExtension = "eyebrarylib"
     private let normalizeTextOnImportKey = "EYEbrary.normalizeTextOnImport.v1"
+
+    private var isSynchronizingLibraryState = false
 
     private var shouldNormalizeTextOnImport: Bool {
         if UserDefaults.standard.object(forKey: normalizeTextOnImportKey) == nil {
@@ -351,36 +406,184 @@ final class AppStore: ObservableObject {
     
     init() {
         loadCategories()
-        loadTemplates()
+        loadLibraries()
         loadPlans()
         loadLetterheads()
         if categories.isEmpty { seedDefaultCategories() }
-        if entries.isEmpty { seedDefaults() }
+        if libraries.isEmpty { seedDefaults() }
+        ensureAtLeastOneLibraryExists()
         ensureTemplateOrdering()
+        syncEntriesFromActiveLibrary()
+    }
+
+    // MARK: - Active Library
+
+    var activeLibrary: LibraryCollection? {
+        guard let index = activeLibraryIndex else { return nil }
+        return libraries[index]
+    }
+
+    var activeLibraryName: String {
+        activeLibrary?.name ?? bundledDefaultLibraryName
+    }
+
+    private var activeLibraryIndex: Int? {
+        if let activeLibraryID,
+           let index = libraries.firstIndex(where: { $0.id == activeLibraryID }) {
+            return index
+        }
+        return libraries.isEmpty ? nil : 0
+    }
+
+    func sortedLibraries() -> [LibraryCollection] {
+        libraries
+    }
+
+    func setActiveLibrary(id: UUID) {
+        guard libraries.contains(where: { $0.id == id }) else { return }
+        activeLibraryID = id
+    }
+
+    @discardableResult
+    func createLibrary(named rawName: String) -> UUID? {
+        let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let newLibrary = LibraryCollection(
+            name: trimmed,
+            entries: [],
+            sortMode: .manual,
+            createdAt: Date(),
+            updatedAt: Date()
+        )
+        libraries.append(newLibrary)
+        activeLibraryID = newLibrary.id
+        return newLibrary.id
+    }
+
+    func renameLibrary(id: UUID, to rawName: String) {
+        let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard let index = libraries.firstIndex(where: { $0.id == id }) else { return }
+
+        libraries[index].name = trimmed
+        libraries[index].updatedAt = Date()
+    }
+
+    func deleteLibrary(id: UUID) {
+        guard !libraries.isEmpty else { return }
+        guard let index = libraries.firstIndex(where: { $0.id == id }) else { return }
+
+        if libraries.count == 1 {
+            let replacement = makeDefaultLibrary(name: bundledDefaultLibraryName, entries: [])
+            libraries = [replacement]
+            activeLibraryID = replacement.id
+            return
+        }
+
+        libraries.remove(at: index)
+
+        if activeLibraryID == id {
+            activeLibraryID = libraries.first?.id
+        }
+    }
+
+    func sortMode(for libraryID: UUID? = nil) -> LibrarySortMode {
+        let targetID = libraryID ?? activeLibraryID
+        guard let targetID,
+              let index = libraries.firstIndex(where: { $0.id == targetID }) else {
+            return .manual
+        }
+        return libraries[index].sortMode
+    }
+
+    func setSortMode(_ mode: LibrarySortMode, for libraryID: UUID? = nil) {
+        let targetID = libraryID ?? activeLibraryID
+        guard let targetID,
+              let index = libraries.firstIndex(where: { $0.id == targetID }) else { return }
+
+        libraries[index].sortMode = mode
+        libraries[index].updatedAt = Date()
+    }
+
+    private func ensureAtLeastOneLibraryExists() {
+        guard libraries.isEmpty else {
+            if activeLibraryIndex == nil {
+                activeLibraryID = libraries.first?.id
+            }
+            return
+        }
+
+        let library = makeDefaultLibrary(
+            name: bundledDefaultLibraryName,
+            entries: loadBundledDefaultLibraryIfAvailable() ?? factoryDefaultTemplates()
+        )
+        libraries = [library]
+        activeLibraryID = library.id
+    }
+
+    private func syncEntriesFromActiveLibrary() {
+        guard !isSynchronizingLibraryState else { return }
+        isSynchronizingLibraryState = true
+        entries = activeLibrary?.entries ?? []
+        isSynchronizingLibraryState = false
+    }
+
+    private func syncActiveLibraryFromEntries() {
+        guard !isSynchronizingLibraryState else { return }
+        guard let index = activeLibraryIndex else { return }
+
+        isSynchronizingLibraryState = true
+        libraries[index].entries = entries
+        libraries[index].updatedAt = Date()
+        isSynchronizingLibraryState = false
+    }
+
+    private func makeDefaultLibrary(name: String, entries: [LibraryEntry]) -> LibraryCollection {
+        LibraryCollection(
+            name: name,
+            entries: entries,
+            sortMode: .manual,
+            createdAt: Date(),
+            updatedAt: Date()
+        )
     }
 
     // MARK: - Ordering
 
     private func ensureTemplateOrdering() {
-        if entries.allSatisfy({ $0.order != nil }) { return }
+        guard !libraries.isEmpty else { return }
 
-        let sorted = entries.sorted { a, b in
-            if a.isFavorite != b.isFavorite { return a.isFavorite && !b.isFavorite }
-            let ao = a.order ?? Int.max
-            let bo = b.order ?? Int.max
-            if ao != bo { return ao < bo }
-            return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
-        }
+        var updatedLibraries = libraries
+        var didChange = false
 
-        for (idx, t) in sorted.enumerated() {
-            if let i = entries.firstIndex(where: { $0.id == t.id }) {
-                if entries[i].order == nil {
-                    entries[i].order = idx
+        for libraryIndex in updatedLibraries.indices {
+            if updatedLibraries[libraryIndex].entries.allSatisfy({ $0.order != nil }) {
+                continue
+            }
+
+            let sorted = updatedLibraries[libraryIndex].entries.sorted { a, b in
+                if a.isFavorite != b.isFavorite { return a.isFavorite && !b.isFavorite }
+                let ao = a.order ?? Int.max
+                let bo = b.order ?? Int.max
+                if ao != bo { return ao < bo }
+                return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
+            }
+
+            for (idx, entry) in sorted.enumerated() {
+                if let entryIndex = updatedLibraries[libraryIndex].entries.firstIndex(where: { $0.id == entry.id }),
+                   updatedLibraries[libraryIndex].entries[entryIndex].order == nil {
+                    updatedLibraries[libraryIndex].entries[entryIndex].order = idx
+                    didChange = true
                 }
             }
         }
 
-        entries = entries
+        if didChange {
+            libraries = updatedLibraries
+        } else {
+            syncEntriesFromActiveLibrary()
+        }
     }
 
     func applyTemplateOrder(_ orderedIDs: [UUID]) {
@@ -474,11 +677,18 @@ final class AppStore: ObservableObject {
 
         categories.removeAll { $0.id == id }
 
-        for index in entries.indices where entries[index].category == id {
-            entries[index].category = .general
-            entries[index].updatedAt = Date()
+        var updatedLibraries = libraries
+        let now = Date()
+
+        for libraryIndex in updatedLibraries.indices {
+            for entryIndex in updatedLibraries[libraryIndex].entries.indices where updatedLibraries[libraryIndex].entries[entryIndex].category == id {
+                updatedLibraries[libraryIndex].entries[entryIndex].category = .general
+                updatedLibraries[libraryIndex].entries[entryIndex].updatedAt = now
+                updatedLibraries[libraryIndex].updatedAt = now
+            }
         }
 
+        libraries = updatedLibraries
         normalizeCategoryOrdering()
     }
 
@@ -851,22 +1061,42 @@ final class AppStore: ObservableObject {
     }
     // MARK: - Persistence
 
-    private func loadTemplates() {
+    private func loadLibraries() {
+        if let data = UserDefaults.standard.data(forKey: librariesKey) {
+            do {
+                let state = try JSONDecoder.standard.decode(LibrariesState.self, from: data)
+                libraries = state.libraries
+                activeLibraryID = state.activeLibraryID ?? state.libraries.first?.id
+                return
+            } catch {
+                libraries = []
+                activeLibraryID = nil
+            }
+        }
+
         guard let data = UserDefaults.standard.data(forKey: templatesKey) else {
-            entries = []
+            libraries = []
+            activeLibraryID = nil
             return
         }
+
         do {
-            entries = try JSONDecoder.standard.decode([LibraryEntry].self, from: data)
+            let migratedEntries = try JSONDecoder.standard.decode([LibraryEntry].self, from: data)
+            let migratedLibrary = makeDefaultLibrary(name: bundledDefaultLibraryName, entries: migratedEntries)
+            libraries = [migratedLibrary]
+            activeLibraryID = migratedLibrary.id
+            persistLibraries()
         } catch {
-            entries = []
+            libraries = []
+            activeLibraryID = nil
         }
     }
 
-    private func persistTemplates() {
+    private func persistLibraries() {
         do {
-            let data = try JSONEncoder.standard.encode(entries)
-            UserDefaults.standard.set(data, forKey: templatesKey)
+            let state = LibrariesState(libraries: libraries, activeLibraryID: activeLibraryID)
+            let data = try JSONEncoder.standard.encode(state)
+            UserDefaults.standard.set(data, forKey: librariesKey)
         } catch {
             // ignore
         }
@@ -995,11 +1225,21 @@ final class AppStore: ObservableObject {
     }
 
     private func seedDefaults() {
-        entries = loadBundledDefaultLibraryIfAvailable() ?? factoryDefaultTemplates()
+        let library = makeDefaultLibrary(
+            name: bundledDefaultLibraryName,
+            entries: loadBundledDefaultLibraryIfAvailable() ?? factoryDefaultTemplates()
+        )
+        libraries = [library]
+        activeLibraryID = library.id
     }
 
     func resetToFactoryDefaults() {
-        entries = loadBundledDefaultLibraryIfAvailable() ?? factoryDefaultTemplates()
+        let library = makeDefaultLibrary(
+            name: bundledDefaultLibraryName,
+            entries: loadBundledDefaultLibraryIfAvailable() ?? factoryDefaultTemplates()
+        )
+        libraries = [library]
+        activeLibraryID = library.id
         categories = defaultCategories()
         plans = []
         letterheads = []
