@@ -854,6 +854,46 @@ final class AppStore: ObservableObject {
         }
     }
 
+    private func measuredPrefixWidth(_ prefix: String, font: UIFont) -> CGFloat {
+        ceil((prefix as NSString).size(withAttributes: [.font: font]).width)
+    }
+
+    private func importParagraphStyle(
+        baseStyle: NSParagraphStyle?,
+        baseIndent: CGFloat,
+        markerPrefix: String?,
+        font: UIFont
+    ) -> NSMutableParagraphStyle {
+        let style = (baseStyle?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+        style.tailIndent = 0
+        style.paragraphSpacing = 0
+        style.paragraphSpacingBefore = 0
+        style.lineSpacing = 0
+
+        if let markerPrefix {
+            let markerWidth = measuredPrefixWidth(markerPrefix, font: font)
+            style.firstLineHeadIndent = baseIndent
+            style.headIndent = baseIndent + markerWidth
+        } else {
+            style.firstLineHeadIndent = baseIndent
+            style.headIndent = baseIndent
+        }
+
+        return style
+    }
+
+    private func importMarkerPrefix(in trimmedParagraph: String) -> String? {
+        if trimmedParagraph.hasPrefix("• ") {
+            return "• "
+        }
+
+        if let range = trimmedParagraph.range(of: "^\\d+\\.\\s", options: .regularExpression) {
+            return String(trimmedParagraph[range])
+        }
+
+        return nil
+    }
+
     private func normalizedImportedEntryIfNeeded(_ entry: LibraryEntry) -> LibraryEntry {
         guard shouldNormalizeTextOnImport else { return entry }
 
@@ -906,8 +946,6 @@ final class AppStore: ObservableObject {
             normalizedNSString.range(of: "Plan:", options: .caseInsensitive).location != NSNotFound
 
         let bodyIndent: CGFloat = 16
-        let bulletIndent = ceil(("• " as NSString).size(withAttributes: [.font: baseFont]).width)
-        let numberIndent = ceil(("1. " as NSString).size(withAttributes: [.font: baseFont]).width)
 
         var paragraphLocation = 0
         while paragraphLocation < mutable.length {
@@ -916,32 +954,14 @@ final class AppStore: ObservableObject {
             let trimmedParagraph = paragraphText.trimmingCharacters(in: .whitespacesAndNewlines)
 
             let existingStyle = mutable.attribute(.paragraphStyle, at: paragraphRange.location, effectiveRange: nil) as? NSParagraphStyle
-            let style = (existingStyle?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
-
-            style.firstLineHeadIndent = hasAssessmentOrPlanHeadings ? bodyIndent : 0
-            style.headIndent = hasAssessmentOrPlanHeadings ? bodyIndent : 0
-            style.tailIndent = 0
-            style.paragraphSpacing = 0
-            style.paragraphSpacingBefore = 0
-            style.lineSpacing = 0
-
-            if trimmedParagraph.range(of: "^\\d+\\.\\s", options: .regularExpression) != nil {
-                if hasAssessmentOrPlanHeadings {
-                    style.firstLineHeadIndent = bodyIndent * 2
-                    style.headIndent = (bodyIndent * 2) + numberIndent
-                } else {
-                    style.firstLineHeadIndent = bodyIndent
-                    style.headIndent = bodyIndent + numberIndent
-                }
-            } else if trimmedParagraph.hasPrefix("• ") {
-                if hasAssessmentOrPlanHeadings {
-                    style.firstLineHeadIndent = bodyIndent * 2
-                    style.headIndent = (bodyIndent * 2) + bulletIndent
-                } else {
-                    style.firstLineHeadIndent = bodyIndent
-                    style.headIndent = bodyIndent + bulletIndent
-                }
-            }
+            let baseIndent = hasAssessmentOrPlanHeadings ? bodyIndent : 0
+            let nestedIndent = hasAssessmentOrPlanHeadings ? bodyIndent * 2 : bodyIndent
+            let style = importParagraphStyle(
+                baseStyle: existingStyle,
+                baseIndent: importMarkerPrefix(in: trimmedParagraph) == nil ? baseIndent : nestedIndent,
+                markerPrefix: importMarkerPrefix(in: trimmedParagraph),
+                font: baseFont
+            )
 
             mutable.addAttribute(.paragraphStyle, value: style, range: paragraphRange)
 
@@ -1353,7 +1373,7 @@ final class AppStore: ObservableObject {
             )
         }
 
-        return normalizeImportedEntries(importedEntries)
+        return normalizeImportedEntries(importedEntries).map(normalizedImportedEntryIfNeeded)
     }
 
     private func seedDefaults() {
