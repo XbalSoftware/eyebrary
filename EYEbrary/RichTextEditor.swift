@@ -279,6 +279,46 @@ private enum RichTextEditorFormatting {
         let clampedY = min(max(previousOffset.y, -textView.adjustedContentInset.top), maxOffsetY)
         textView.setContentOffset(CGPoint(x: previousOffset.x, y: clampedY), animated: false)
     }
+
+    private static func measuredPrefixWidth(_ prefix: String, font: UIFont) -> CGFloat {
+        ceil((prefix as NSString).size(withAttributes: [.font: font]).width)
+    }
+
+    private static func paragraphStyle(
+        baseStyle: NSParagraphStyle?,
+        baseIndent: CGFloat,
+        markerPrefix: String?,
+        font: UIFont
+    ) -> NSMutableParagraphStyle {
+        let style = (baseStyle?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+        style.tailIndent = 0
+        style.paragraphSpacing = 0
+        style.paragraphSpacingBefore = 0
+        style.lineSpacing = 0
+
+        if let markerPrefix {
+            let markerWidth = measuredPrefixWidth(markerPrefix, font: font)
+            style.firstLineHeadIndent = baseIndent
+            style.headIndent = baseIndent + markerWidth
+        } else {
+            style.firstLineHeadIndent = baseIndent
+            style.headIndent = baseIndent
+        }
+
+        return style
+    }
+
+    private static func markerPrefix(in trimmedParagraph: String) -> String? {
+        if trimmedParagraph.hasPrefix("• ") {
+            return "• "
+        }
+
+        if let range = trimmedParagraph.range(of: "^\\d+\\.\\s", options: .regularExpression) {
+            return String(trimmedParagraph[range])
+        }
+
+        return nil
+    }
     static func toggleBold(in textView: UITextView) {
         let range = textView.selectedRange
         guard range.location != NSNotFound else { return }
@@ -451,17 +491,15 @@ private enum RichTextEditorFormatting {
 
         let fullReplacementRange = NSRange(location: 0, length: replacementAttributed.length)
         let bulletFont = (textView.typingAttributes[.font] as? UIFont) ?? textView.font ?? .preferredFont(forTextStyle: .body)
-        let bulletIndent = ceil(("• " as NSString).size(withAttributes: [.font: bulletFont]).width)
 
         replacementAttributed.enumerateAttribute(.paragraphStyle, in: fullReplacementRange, options: []) { value, subrange, _ in
-            let style = ((value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
-            if shouldRemoveBullets {
-                style.firstLineHeadIndent = 0
-                style.headIndent = 0
-            } else {
-                style.firstLineHeadIndent = 0
-                style.headIndent = bulletIndent
-            }
+            let paragraphText = (replacement as NSString).substring(with: subrange).trimmingCharacters(in: .whitespacesAndNewlines)
+            let style = paragraphStyle(
+                baseStyle: value as? NSParagraphStyle,
+                baseIndent: 0,
+                markerPrefix: shouldRemoveBullets ? nil : markerPrefix(in: paragraphText),
+                font: bulletFont
+            )
             replacementAttributed.addAttribute(.paragraphStyle, value: style, range: subrange)
         }
 
@@ -506,19 +544,15 @@ private enum RichTextEditorFormatting {
 
         let fullReplacementRange = NSRange(location: 0, length: replacementAttributed.length)
         let font = (textView.typingAttributes[.font] as? UIFont) ?? textView.font ?? .preferredFont(forTextStyle: .body)
-        let numberIndent = ceil(("1. " as NSString).size(withAttributes: [.font: font]).width)
 
         replacementAttributed.enumerateAttribute(.paragraphStyle, in: fullReplacementRange, options: []) { value, subrange, _ in
-            let style = ((value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
-
-            if shouldRemoveNumbers {
-                style.firstLineHeadIndent = 0
-                style.headIndent = 0
-            } else {
-                style.firstLineHeadIndent = 0
-                style.headIndent = numberIndent
-            }
-
+            let paragraphText = (replacement as NSString).substring(with: subrange).trimmingCharacters(in: .whitespacesAndNewlines)
+            let style = paragraphStyle(
+                baseStyle: value as? NSParagraphStyle,
+                baseIndent: 0,
+                markerPrefix: shouldRemoveNumbers ? nil : markerPrefix(in: paragraphText),
+                font: font
+            )
             replacementAttributed.addAttribute(.paragraphStyle, value: style, range: subrange)
         }
 
@@ -574,8 +608,6 @@ private enum RichTextEditorFormatting {
         let hasAssessmentOrPlanHeadings = normalizedNSString.range(of: "Assessment:", options: .caseInsensitive).location != NSNotFound ||
             normalizedNSString.range(of: "Plan:", options: .caseInsensitive).location != NSNotFound
         let bodyIndent: CGFloat = 16
-        let bulletIndent = ceil(("• " as NSString).size(withAttributes: [.font: baseFont]).width)
-        let numberIndent = ceil(("1. " as NSString).size(withAttributes: [.font: baseFont]).width)
 
         var paragraphLocation = 0
         while paragraphLocation < mutable.length {
@@ -584,33 +616,14 @@ private enum RichTextEditorFormatting {
             let trimmedParagraph = paragraphText.trimmingCharacters(in: .whitespacesAndNewlines)
 
             let existingStyle = mutable.attribute(.paragraphStyle, at: paragraphRange.location, effectiveRange: nil) as? NSParagraphStyle
-            let style = (existingStyle?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
-
-            // Reset paragraphs to a clean base style.
-            style.firstLineHeadIndent = hasAssessmentOrPlanHeadings ? bodyIndent : 0
-            style.headIndent = hasAssessmentOrPlanHeadings ? bodyIndent : 0
-            style.tailIndent = 0
-            style.paragraphSpacing = 0
-            style.paragraphSpacingBefore = 0
-            style.lineSpacing = 0
-
-            if trimmedParagraph.range(of: "^\\d+\\.\\s", options: .regularExpression) != nil {
-                if hasAssessmentOrPlanHeadings {
-                    style.firstLineHeadIndent = bodyIndent * 2
-                    style.headIndent = (bodyIndent * 2) + numberIndent
-                } else {
-                    style.firstLineHeadIndent = bodyIndent
-                    style.headIndent = bodyIndent + numberIndent
-                }
-            } else if trimmedParagraph.hasPrefix("• ") {
-                if hasAssessmentOrPlanHeadings {
-                    style.firstLineHeadIndent = bodyIndent * 2
-                    style.headIndent = (bodyIndent * 2) + bulletIndent
-                } else {
-                    style.firstLineHeadIndent = bodyIndent
-                    style.headIndent = bodyIndent + bulletIndent
-                }
-            }
+            let baseIndent = hasAssessmentOrPlanHeadings ? bodyIndent : 0
+            let nestedIndent = hasAssessmentOrPlanHeadings ? bodyIndent * 2 : bodyIndent
+            let style = paragraphStyle(
+                baseStyle: existingStyle,
+                baseIndent: markerPrefix(in: trimmedParagraph) == nil ? baseIndent : nestedIndent,
+                markerPrefix: markerPrefix(in: trimmedParagraph),
+                font: baseFont
+            )
 
             mutable.addAttribute(.paragraphStyle, value: style, range: paragraphRange)
 

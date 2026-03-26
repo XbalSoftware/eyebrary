@@ -18,6 +18,17 @@ struct HistorySheet: View {
 
     @Environment(\.dismiss) private var dismiss
 
+    private func entrySummary(for item: SavedPlan) -> String {
+        let titles = item.entries
+            .map { $0.title.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        let preview = titles.prefix(3).joined(separator: ", ")
+        let suffix = titles.count > 3 ? "…" : ""
+        let itemCount = item.entries.count
+        return "\(itemCount) item\(itemCount == 1 ? "" : "s") · \(preview)\(suffix)"
+    }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
@@ -50,36 +61,42 @@ struct HistorySheet: View {
                     ContentUnavailableView(
                         "No history",
                         systemImage: "clock",
-                        description: Text("Cleared plans are saved here (up to 10)\n- patient names omitted for privacy -")
+                        description: Text("Cleared plans are saved here (up to 10). Patient names are omitted for privacy.")
                     )
                     Spacer()
                 } else {
-                    List {
-                        Section {
-                            ForEach(history) { item in
-                                Button {
-                                    onRestore(item)
-                                } label: {
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        Text(item.patientName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "- patient name not retained for privacy -" : item.patientName)
-                                            .font(.headline)
+                    VStack(spacing: 0) {
+                        HStack {
+                            Text("Patient names are not stored for privacy")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                        }
+                        .padding(.horizontal)
+                        .padding(.top, 10)
+                        .padding(.bottom, 6)
 
-                                        HStack(spacing: 10) {
+                        List {
+                            Section {
+                                ForEach(history) { item in
+                                    Button {
+                                        onRestore(item)
+                                    } label: {
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            Text(entrySummary(for: item))
+                                                .font(.headline)
+                                                .lineLimit(1)
+                                                .truncationMode(.tail)
+
                                             Text(item.createdAt.formatted(date: .abbreviated, time: .shortened))
                                                 .font(.subheadline)
                                                 .foregroundStyle(.secondary)
-
-                                            Spacer()
-
-                                            Text("\(item.entries.count) item\(item.entries.count == 1 ? "" : "s")")
-                                                .font(.subheadline)
-                                                .foregroundStyle(.secondary)
                                         }
+                                        .padding(.vertical, 6)
                                     }
-                                    .padding(.vertical, 6)
                                 }
+                                .onDelete(perform: onDelete)
                             }
-                            .onDelete(perform: onDelete)
                         }
                     }
                 }

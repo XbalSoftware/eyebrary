@@ -13,6 +13,13 @@ import UIKit
 
 struct NewReportView: View {
     @EnvironmentObject private var store: AppStore
+    @Environment(\.scenePhase) private var scenePhase
+
+    private struct DraftPayload: Codable {
+        var reportTitle: String
+        var reportDate: Date
+        var entries: [PlanEntry]
+    }
 
     @State private var selectedEntryID: UUID? = nil
     @State private var categoryFilter: CategoryFilter = .all
@@ -61,6 +68,9 @@ struct NewReportView: View {
     @State private var expandedEntryIDs: Set<UUID> = []
     @State private var richTextCommandsByEntryID: [UUID: RichTextEditorCommands] = [:]
     @State private var pendingScrollEntryID: UUID? = nil
+    @State private var showDraftRestoredBanner: Bool = false
+
+    private let draftStorageKey = "EYEbrary.currentDraft.v1"
 
     private var filteredEntries: [LibraryEntry] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -130,6 +140,7 @@ struct NewReportView: View {
             HistorySheet(
                 history: store.history,
                 onRestore: { saved in
+                    stashCurrentReportInHistoryBeforeRestore()
                     reportTitle = saved.reportTitle
                     reportDate = saved.reportDate
                     patientName = saved.patientName
@@ -157,6 +168,29 @@ struct NewReportView: View {
             }
         } message: {
             Text("This item has edits. Deleting it will lose your changes.")
+        }
+        .overlay(alignment: .top) {
+            if showDraftRestoredBanner {
+                Text("Draft Restored (patient name not saved for privacy)")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(
+                        Capsule()
+                            .fill(Color.secondary.opacity(0.16))
+                    )
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .onAppear {
+            restoreDraftIfAvailable()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .inactive || newPhase == .background {
+                persistCurrentDraft()
+            }
         }
     }
 
@@ -557,9 +591,23 @@ struct NewReportView: View {
                                     if !collapsedSelectedEntries {
                                         VStack(alignment: .leading, spacing: 6) {
                                             HStack {
-                                                Text("Content")
-                                                    .font(.caption)
-                                                    .foregroundStyle(.secondary)
+                                                Button {
+                                                    if expandedEntryIDs.contains(entry.id) {
+                                                        expandedEntryIDs.remove(entry.id)
+                                                    } else {
+                                                        expandedEntryIDs.insert(entry.id)
+                                                        DispatchQueue.main.async {
+                                                            withAnimation(.easeInOut(duration: 0.2)) {
+                                                                proxy.scrollTo(entry.id, anchor: .top)
+                                                            }
+                                                        }
+                                                    }
+                                                } label: {
+                                                    Text("Expand Content")
+                                                        .font(.caption)
+                                                        .foregroundStyle(expandedEntryIDs.contains(entry.id) ? Color.accentColor : Color.secondary)
+                                                }
+                                                .buttonStyle(.plain)
 
                                                 Spacer()
 
@@ -628,25 +676,18 @@ struct NewReportView: View {
                                             )
                                             .frame(minHeight: expandedEntryIDs.contains(entry.id) ? 420 : 180)
                                             .contentShape(Rectangle())
-                                            .onTapGesture(count: 2) {
-                                                if expandedEntryIDs.contains(entry.id) {
-                                                    expandedEntryIDs.remove(entry.id)
-                                                } else {
-                                                    expandedEntryIDs.insert(entry.id)
-                                                    DispatchQueue.main.async {
-                                                        withAnimation(.easeInOut(duration: 0.2)) {
-                                                            proxy.scrollTo(entry.id, anchor: .top)
-                                                        }
-                                                    }
-                                                }
-                                            }
                                             .background(
                                                 RoundedRectangle(cornerRadius: 8)
                                                     .fill(Color.black.opacity(0.35))
                                             )
                                             .overlay(
                                                 RoundedRectangle(cornerRadius: 8)
-                                                    .stroke(.secondary.opacity(0.35))
+                                                    .stroke(
+                                                        expandedEntryIDs.contains(entry.id)
+                                                            ? Color.accentColor
+                                                            : Color.secondary.opacity(0.35),
+                                                        lineWidth: expandedEntryIDs.contains(entry.id) ? 1.5 : 1
+                                                    )
                                             )
                                         }
                                     }
@@ -815,11 +856,81 @@ struct NewReportView: View {
         expandedEntryIDs.remove(id)
         richTextCommandsByEntryID.removeValue(forKey: id)
     }
+    
+    private func persistCurrentDraft() {
+        let trimmedPatientName = patientName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedReportTitle = reportTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasMeaningfulCurrentWork = !planEntries.isEmpty || !trimmedReportTitle.isEmpty || !trimmedPatientName.isEmpty
 
+        guard hasMeaningfulCurrentWork else {
+            UserDefaults.standard.removeObject(forKey: draftStorageKey)
+            return
+        }
+
+        let payload = DraftPayload(
+            reportTitle: reportTitle,
+            reportDate: reportDate,
+            entries: planEntries
+        )
+
+        do {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            let data = try encoder.encode(payload)
+            UserDefaults.standard.set(data, forKey: draftStorageKey)
+        } catch {
+            print("Draft save failed:", error)
+        }
+    }
+
+    private func restoreDraftIfAvailable() {
+        guard let data = UserDefaults.standard.data(forKey: draftStorageKey) else { return }
+
+        do {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let payload = try decoder.decode(DraftPayload.self, from: data)
+
+            reportTitle = payload.reportTitle
+            reportDate = payload.reportDate
+            patientName = ""
+            planEntries = payload.entries
+            selectedEntryID = nil
+            expandedEntryIDs.removeAll()
+            richTextCommandsByEntryID = Dictionary(uniqueKeysWithValues: payload.entries.map { ($0.id, RichTextEditorCommands()) })
+
+            withAnimation(.easeInOut(duration: 0.2)) {
+                showDraftRestoredBanner = true
+            }
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    showDraftRestoredBanner = false
+                }
+            }
+        } catch {
+            print("Draft restore failed:", error)
+            UserDefaults.standard.removeObject(forKey: draftStorageKey)
+        }
+    }
+
+    private func stashCurrentReportInHistoryBeforeRestore() {
+        let trimmedPatientName = patientName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedReportTitle = reportTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasMeaningfulCurrentWork = !planEntries.isEmpty || !trimmedPatientName.isEmpty || !trimmedReportTitle.isEmpty
+        guard hasMeaningfulCurrentWork else { return }
+
+        store.addToHistory(
+            reportTitle: reportTitle,
+            reportDate: reportDate,
+            patientName: "",
+            entries: planEntries
+        )
+    }
     private func clearForm() {
         // Privacy: do not store patient name in history.
         store.addToHistory(reportTitle: reportTitle, reportDate: reportDate, patientName: "", entries: planEntries)
-
+        UserDefaults.standard.removeObject(forKey: draftStorageKey)
         // Clear form fields.
         reportTitle = ""
         patientName = ""
