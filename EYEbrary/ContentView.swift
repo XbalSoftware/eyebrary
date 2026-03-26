@@ -23,6 +23,26 @@ struct ContentView: View {
     private var launchAcknowledgementMessage: String {
         "EYEbrary is a report-generation tool intended for use by qualified eye care professionals.\n\nDefault library entries are provided as editable templates and may not reflect current clinical guidance.\n\nAll information included in a generated report must be reviewed and approved by the practitioner before being provided to a patient."
     }
+    
+    private var hiddenUndoRedoCommands: some View {
+        HStack {
+            Button("Undo") {
+                store.undo()
+            }
+            .keyboardShortcut("z", modifiers: .command)
+            .disabled(!store.canUndo)
+
+            Button("Redo") {
+                store.redo()
+            }
+            .keyboardShortcut("z", modifiers: [.command, .shift])
+            .disabled(!store.canRedo)
+        }
+        .opacity(0.001)
+        .frame(width: 0, height: 0)
+        .clipped()
+        .accessibilityHidden(true)
+    }
 
     var body: some View {
         TabView {
@@ -40,6 +60,9 @@ struct ContentView: View {
                 SettingsView()
             }
             .tabItem { Label("Settings", systemImage: "gearshape") }
+        }
+        .overlay(alignment: .topLeading) {
+            hiddenUndoRedoCommands
         }
         .environmentObject(store)
         .onAppear {

@@ -290,6 +290,12 @@ struct LetterheadState: Codable, Equatable {
     var selectedLetterheadName: String?
 }
 
+struct UndoSnapshot: Codable, Equatable {
+    var libraries: [LibraryCollection]
+    var activeLibraryID: UUID?
+    var categories: [CategoryItem]
+}
+
 struct EyeBraryLibraryManifest: Codable, Equatable {
     var format: String
     var formatVersion: Int
@@ -338,6 +344,8 @@ extension JSONDecoder {
 
 @MainActor
 final class AppStore: ObservableObject {
+    @Published private(set) var canUndo: Bool = false
+    @Published private(set) var canRedo: Bool = false
     // Libraries / Entries
     @Published var libraries: [LibraryCollection] = [] {
         didSet {
@@ -402,6 +410,10 @@ final class AppStore: ObservableObject {
     private let normalizeTextOnImportKey = "EYEbrary.normalizeTextOnImport.v1"
 
     private var isSynchronizingLibraryState = false
+    private var undoStack: [UndoSnapshot] = []
+    private var redoStack: [UndoSnapshot] = []
+    private var isRestoringUndoSnapshot = false
+    private let maxUndoSnapshots = 50
 
     private var shouldNormalizeTextOnImport: Bool {
         if UserDefaults.standard.object(forKey: normalizeTextOnImportKey) == nil {
@@ -420,6 +432,61 @@ final class AppStore: ObservableObject {
         ensureAtLeastOneLibraryExists()
         ensureTemplateOrdering()
         syncEntriesFromActiveLibrary()
+    }
+
+    // MARK: - Undo / Redo
+
+    private func makeUndoSnapshot() -> UndoSnapshot {
+        UndoSnapshot(
+            libraries: libraries,
+            activeLibraryID: activeLibraryID,
+            categories: categories
+        )
+    }
+
+    private func updateUndoAvailability() {
+        canUndo = !undoStack.isEmpty
+        canRedo = !redoStack.isEmpty
+    }
+
+    func pushUndoSnapshot() {
+        guard !isRestoringUndoSnapshot else { return }
+        undoStack.append(makeUndoSnapshot())
+        if undoStack.count > maxUndoSnapshots {
+            undoStack.removeFirst(undoStack.count - maxUndoSnapshots)
+        }
+        redoStack.removeAll()
+        updateUndoAvailability()
+    }
+
+    private func restoreUndoSnapshot(_ snapshot: UndoSnapshot) {
+        isRestoringUndoSnapshot = true
+        libraries = snapshot.libraries
+        activeLibraryID = snapshot.activeLibraryID
+        categories = snapshot.categories
+        isRestoringUndoSnapshot = false
+        ensureAtLeastOneLibraryExists()
+        ensureTemplateOrdering()
+        syncEntriesFromActiveLibrary()
+        updateUndoAvailability()
+    }
+
+    func undo() {
+        guard let snapshot = undoStack.popLast() else {
+            updateUndoAvailability()
+            return
+        }
+        redoStack.append(makeUndoSnapshot())
+        restoreUndoSnapshot(snapshot)
+    }
+
+    func redo() {
+        guard let snapshot = redoStack.popLast() else {
+            updateUndoAvailability()
+            return
+        }
+        undoStack.append(makeUndoSnapshot())
+        restoreUndoSnapshot(snapshot)
     }
 
     // MARK: - Active Library
@@ -455,6 +522,7 @@ final class AppStore: ObservableObject {
         let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
+        pushUndoSnapshot()
         let newLibrary = LibraryCollection(
             name: trimmed,
             entries: [],
@@ -472,6 +540,7 @@ final class AppStore: ObservableObject {
         guard !trimmed.isEmpty else { return }
         guard let index = libraries.firstIndex(where: { $0.id == id }) else { return }
 
+        pushUndoSnapshot()
         libraries[index].name = trimmed
         libraries[index].updatedAt = Date()
     }
@@ -480,6 +549,7 @@ final class AppStore: ObservableObject {
         guard !libraries.isEmpty else { return }
         guard let index = libraries.firstIndex(where: { $0.id == id }) else { return }
 
+        pushUndoSnapshot()
         if libraries.count == 1 {
             let replacement = makeDefaultLibrary(name: bundledDefaultLibraryName, entries: [])
             libraries = [replacement]
@@ -593,6 +663,7 @@ final class AppStore: ObservableObject {
     }
 
     func applyTemplateOrder(_ orderedIDs: [UUID]) {
+        pushUndoSnapshot()
         for (i, id) in orderedIDs.enumerated() {
             if let idx = entries.firstIndex(where: { $0.id == id }) {
                 entries[idx].order = i
@@ -624,6 +695,7 @@ final class AppStore: ObservableObject {
     }
 
     func deleteTemplates(at offsets: IndexSet, in filtered: [LibraryEntry]) {
+        pushUndoSnapshot()
         let idsToDelete = offsets.map { filtered[$0].id }
         entries.removeAll { idsToDelete.contains($0.id) }
     }
@@ -674,6 +746,7 @@ final class AppStore: ObservableObject {
         guard let index = categories.firstIndex(where: { $0.id == id }) else { return }
         guard !categories.contains(where: { $0.id != id && $0.name.compare(trimmed, options: .caseInsensitive) == .orderedSame }) else { return }
 
+        pushUndoSnapshot()
         categories[index].name = trimmed
     }
 
@@ -681,6 +754,7 @@ final class AppStore: ObservableObject {
         guard id != .general else { return }
         guard categories.contains(where: { $0.id == id }) else { return }
 
+        pushUndoSnapshot()
         categories.removeAll { $0.id == id }
 
         var updatedLibraries = libraries
@@ -699,6 +773,7 @@ final class AppStore: ObservableObject {
     }
 
     func applyCategoryOrder(_ orderedIDs: [EntryCategory]) {
+        pushUndoSnapshot()
         for (index, id) in orderedIDs.enumerated() {
             if let categoryIndex = categories.firstIndex(where: { $0.id == id }) {
                 categories[categoryIndex].order = index
@@ -967,6 +1042,7 @@ final class AppStore: ObservableObject {
             importedAt: importedAt
         ).map(normalizedImportedEntryIfNeeded)
 
+        pushUndoSnapshot()
         if merge {
             var map = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0) })
             for entry in imported {
@@ -996,6 +1072,7 @@ final class AppStore: ObservableObject {
             importedAt: importedAt
         ).map(normalizedImportedEntryIfNeeded)
 
+        pushUndoSnapshot()
         if merge {
             var map = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0) })
             for t in incoming { map[t.id] = t }
@@ -1011,6 +1088,37 @@ final class AppStore: ObservableObject {
                 var copy = entry
                 copy.order = index
                 return copy
+            }
+        }
+    }
+
+    func deleteEntries(withIDs ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+        pushUndoSnapshot()
+        entries.removeAll { ids.contains($0.id) }
+    }
+
+    func updateEntryCategory(id: UUID, to category: EntryCategory) {
+        guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
+        guard entries[index].category != category else { return }
+        pushUndoSnapshot()
+        entries[index].category = category
+        entries[index].updatedAt = Date()
+    }
+
+    func updateEntryCategories(ids: Set<UUID>, to category: EntryCategory) {
+        guard !ids.isEmpty else { return }
+        let now = Date()
+        var didChange = false
+
+        for index in entries.indices where ids.contains(entries[index].id) {
+            if entries[index].category != category {
+                if !didChange {
+                    pushUndoSnapshot()
+                    didChange = true
+                }
+                entries[index].category = category
+                entries[index].updatedAt = now
             }
         }
     }

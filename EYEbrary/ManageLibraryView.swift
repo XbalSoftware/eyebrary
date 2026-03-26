@@ -136,15 +136,16 @@ struct ManageLibraryView: View {
         }
         .sheet(isPresented: $showRecentlyImportedSheet) {
             NavigationStack {
-                RecentlyImportedSheet()
+                BatchSelectSheet()
             }
             .environmentObject(store)
+            .presentationDetents([.large])
+            .interactiveDismissDisabled()
         }
         .alert("Delete entry?", isPresented: $showDeleteEntryConfirm) {
             Button("Delete", role: .destructive) {
-                if let id = pendingDeleteEntryID,
-                   let idx = store.entries.firstIndex(where: { $0.id == id }) {
-                    store.entries.remove(at: idx)
+                if let id = pendingDeleteEntryID {
+                    store.deleteEntries(withIDs: [id])
                     if selectedID == id { selectedID = nil }
                 }
                 pendingDeleteEntryID = nil
@@ -277,21 +278,6 @@ struct ManageLibraryView: View {
                 Label("New Entry", systemImage: "plus")
                     .labelStyle(.iconOnly)
                     .font(.system(size: 18, weight: .semibold))
-            }
-            .buttonStyle(.plain)
-            .frame(width: 24, alignment: .center)
-            .padding(.trailing, 6)
-
-            Menu {
-                Button {
-                    showRecentlyImportedSheet = true
-                } label: {
-                    Label("Recently Imported", systemImage: "clock.arrow.circlepath")
-                }
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(Color.secondary)
             }
             .buttonStyle(.plain)
             .frame(width: 24, alignment: .center)
@@ -429,6 +415,23 @@ struct ManageLibraryView: View {
                 )
             }
             .buttonStyle(.plain)
+
+            Button {
+                showRecentlyImportedSheet = true
+            } label: {
+                Image(systemName: "checklist")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18, height: 18)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.secondary.opacity(0.12))
+                    )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Batch Select")
         }
         .padding(.horizontal)
         .padding(.top, 2)
@@ -586,12 +589,7 @@ struct ManageLibraryView: View {
     // removed createNewTemplate()
 
     private func changeCategory(for ids: [UUID], to newCategory: EntryCategory) {
-        for id in ids {
-            guard var t = store.entry(id: id) else { continue }
-            t.category = newCategory
-            t.updatedAt = Date()
-            store.updateEntry(t)
-        }
+        store.updateEntryCategories(ids: Set(ids), to: newCategory)
     }
 }
 
@@ -601,7 +599,16 @@ private struct ImportedEntryGroup: Identifiable {
     var entries: [LibraryEntry]
 }
 
-private struct RecentlyImportedSheet: View {
+private enum BatchSelectArrangeMode: String, CaseIterable {
+    case manual
+    case alphabeticalAZ
+    case alphabeticalZA
+    case newestUpdated
+    case oldestUpdated
+    case recentImports
+}
+
+private struct BatchSelectSheet: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
 
@@ -609,15 +616,71 @@ private struct RecentlyImportedSheet: View {
     @State private var selectedEntryIDs: Set<UUID> = []
     @State private var showCategoryDialog = false
     @State private var showDeleteConfirmation = false
+    @State private var shareItem: ShareItem? = nil
+    @State private var exportErrorMessage: String? = nil
+    @State private var query: String = ""
+    @State private var arrangeMode: BatchSelectArrangeMode = .recentImports
+    @State private var showSelectedOnly: Bool = false
 
-    private var importedGroups: [ImportedEntryGroup] {
-        let importedEntries = store.entries
-            .filter { $0.lastImportedAt != nil }
-            .sorted { a, b in
-                guard let aDate = a.lastImportedAt, let bDate = b.lastImportedAt else { return false }
+    private var trimmedQuery: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var searchableEntries: [LibraryEntry] {
+        let base = store.entries
+        guard !trimmedQuery.isEmpty else { return base }
+        return base.filter {
+            $0.title.localizedCaseInsensitiveContains(trimmedQuery) ||
+            $0.body.localizedCaseInsensitiveContains(trimmedQuery)
+        }
+    }
+    private var arrangedEntriesSource: [LibraryEntry] {
+        let base = searchableEntries
+        guard showSelectedOnly else { return base }
+        return base.filter { selectedEntryIDs.contains($0.id) }
+    }
+    private var flatEntries: [LibraryEntry] {
+        arrangedEntriesSource.sorted { a, b in
+            if !trimmedQuery.isEmpty {
+                let aTitleMatch = a.title.localizedCaseInsensitiveContains(trimmedQuery)
+                let bTitleMatch = b.title.localizedCaseInsensitiveContains(trimmedQuery)
+                if aTitleMatch != bTitleMatch {
+                    return aTitleMatch && !bTitleMatch
+                }
+            }
+
+            switch arrangeMode {
+            case .manual:
+                let ao = a.order ?? Int.max
+                let bo = b.order ?? Int.max
+                if ao != bo { return ao < bo }
+                return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
+
+            case .alphabeticalAZ:
+                return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
+
+            case .alphabeticalZA:
+                return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedDescending
+
+            case .newestUpdated:
+                if a.updatedAt != b.updatedAt { return a.updatedAt > b.updatedAt }
+                return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
+
+            case .oldestUpdated:
+                if a.updatedAt != b.updatedAt { return a.updatedAt < b.updatedAt }
+                return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
+
+            case .recentImports:
+                let aDate = a.lastImportedAt ?? .distantPast
+                let bDate = b.lastImportedAt ?? .distantPast
                 if aDate != bDate { return aDate > bDate }
                 return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
             }
+        }
+    }
+
+    private var importedGroups: [ImportedEntryGroup] {
+        let importedEntries = flatEntries.filter { $0.lastImportedAt != nil }
 
         var groups: [ImportedEntryGroup] = []
         for entry in importedEntries {
@@ -631,48 +694,54 @@ private struct RecentlyImportedSheet: View {
         return groups
     }
 
+    private var arrangeDisplayName: String {
+        switch arrangeMode {
+        case .manual:
+            return "Manual"
+        case .alphabeticalAZ:
+            return "A–Z"
+        case .alphabeticalZA:
+            return "Z–A"
+        case .newestUpdated:
+            return "Newest"
+        case .oldestUpdated:
+            return "Oldest"
+        case .recentImports:
+            return "Recent Imports"
+        }
+    }
+
     var body: some View {
-        Group {
-            if importedGroups.isEmpty {
-                ContentUnavailableView(
-                    "No imported entries",
-                    systemImage: "clock.arrow.circlepath",
-                    description: Text("Imported entries from the active library will appear here.")
-                )
-            } else {
-                List {
-                    ForEach(importedGroups) { group in
-                        Section {
-                            ForEach(group.entries) { entry in
-                                importedEntryRow(entry)
-                            }
-                        } header: {
-                            HStack(alignment: .top, spacing: 12) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(importedBatchHeaderText(group.importedAt))
-                                        .font(.subheadline.weight(.semibold))
-                                    Text("\(group.entries.count) entr\(group.entries.count == 1 ? "y" : "ies")")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-
-                                Spacer()
-
-                                if isSelecting {
-                                    Button(allEntriesSelected(in: group) ? "Deselect Batch" : "Select All") {
-                                        toggleBatchSelection(group)
-                                    }
-                                    .font(.caption)
-                                    .buttonStyle(.borderless)
-                                }
-                            }
-                            .textCase(nil)
-                        }
+        VStack(spacing: 10) {
+            searchAndArrangeBar
+            if isSelecting {
+                selectionStatusBar
+            }
+            Group {
+                if arrangeMode == .recentImports {
+                    if importedGroups.isEmpty {
+                        ContentUnavailableView(
+                            "No imported entries",
+                            systemImage: "clock.arrow.circlepath",
+                            description: Text("Imported entries from the active library will appear here.")
+                        )
+                    } else {
+                        importedGroupsList
+                    }
+                } else {
+                    if flatEntries.isEmpty {
+                        ContentUnavailableView(
+                            "No matching entries",
+                            systemImage: "checklist",
+                            description: Text("Try a different search or arrange mode.")
+                        )
+                    } else {
+                        flatEntriesList
                     }
                 }
             }
         }
-        .navigationTitle("Recently Imported")
+        .navigationTitle("Batch Select")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
@@ -683,6 +752,11 @@ private struct RecentlyImportedSheet: View {
 
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if isSelecting {
+                    Button("Export") {
+                        exportSelectedEntries()
+                    }
+                    .disabled(selectedEntryIDs.isEmpty)
+
                     Button("Category") {
                         showCategoryDialog = true
                     }
@@ -696,6 +770,7 @@ private struct RecentlyImportedSheet: View {
                     Button("Cancel") {
                         isSelecting = false
                         selectedEntryIDs.removeAll()
+                        showSelectedOnly = false
                     }
                 } else {
                     Button("Select") {
@@ -723,6 +798,196 @@ private struct RecentlyImportedSheet: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Delete \(selectedEntryIDs.count) selected entr\(selectedEntryIDs.count == 1 ? "y" : "ies") from the active library?")
+        }
+        .sheet(item: $shareItem) { item in
+            ActivityView(items: [item.url])
+        }
+        .alert("Export failed", isPresented: Binding(
+            get: { exportErrorMessage != nil },
+            set: { if !$0 { exportErrorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) {
+                exportErrorMessage = nil
+            }
+        } message: {
+            Text(exportErrorMessage ?? "Unable to export selected entries.")
+        }
+    }
+    private var selectionStatusBar: some View {
+        HStack(spacing: 12) {
+            Text("\(selectedEntryIDs.count) selected")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.primary)
+
+            Spacer()
+
+            Button(showSelectedOnly ? "Show All" : "Show Selected") {
+                showSelectedOnly.toggle()
+            }
+            .font(.footnote)
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.secondary.opacity(0.12))
+        )
+        .padding(.horizontal)
+    }
+    private var searchAndArrangeBar: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+
+                TextField("Search entries", text: $query)
+                    .textFieldStyle(.plain)
+                    .autocorrectionDisabled(true)
+
+                if !trimmedQuery.isEmpty {
+                    Button {
+                        query = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.secondary.opacity(0.15))
+            )
+
+            HStack {
+                Menu {
+                    Button {
+                        arrangeMode = .manual
+                    } label: {
+                        if arrangeMode == .manual {
+                            Label("Manual", systemImage: "checkmark")
+                        } else {
+                            Text("Manual")
+                        }
+                    }
+
+                    Button {
+                        arrangeMode = .alphabeticalAZ
+                    } label: {
+                        if arrangeMode == .alphabeticalAZ {
+                            Label("A–Z", systemImage: "checkmark")
+                        } else {
+                            Text("A–Z")
+                        }
+                    }
+
+                    Button {
+                        arrangeMode = .alphabeticalZA
+                    } label: {
+                        if arrangeMode == .alphabeticalZA {
+                            Label("Z–A", systemImage: "checkmark")
+                        } else {
+                            Text("Z–A")
+                        }
+                    }
+
+                    Button {
+                        arrangeMode = .newestUpdated
+                    } label: {
+                        if arrangeMode == .newestUpdated {
+                            Label("Newest", systemImage: "checkmark")
+                        } else {
+                            Text("Newest")
+                        }
+                    }
+
+                    Button {
+                        arrangeMode = .oldestUpdated
+                    } label: {
+                        if arrangeMode == .oldestUpdated {
+                            Label("Oldest", systemImage: "checkmark")
+                        } else {
+                            Text("Oldest")
+                        }
+                    }
+
+                    Button {
+                        arrangeMode = .recentImports
+                    } label: {
+                        if arrangeMode == .recentImports {
+                            Label("Recent Imports", systemImage: "checkmark")
+                        } else {
+                            Text("Recent Imports")
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Text("Arrange")
+                            .foregroundStyle(.secondary)
+                        Text(arrangeDisplayName)
+                            .lineLimit(1)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(.footnote)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.secondary.opacity(0.12))
+                    )
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+            }
+        }
+        .padding(.horizontal)
+        .padding(.top, 8)
+    }
+
+    private var importedGroupsList: some View {
+        List {
+            ForEach(importedGroups) { group in
+                Section {
+                    ForEach(group.entries) { entry in
+                        importedEntryRow(entry)
+                    }
+                } header: {
+                    HStack(alignment: .top, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(importedBatchHeaderText(group.importedAt))
+                                .font(.subheadline.weight(.semibold))
+                            Text("\(group.entries.count) entr\(group.entries.count == 1 ? "y" : "ies")")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+
+                        if isSelecting {
+                            Button(allEntriesSelected(in: group) ? "Deselect Batch" : "Select All") {
+                                toggleBatchSelection(group)
+                            }
+                            .font(.caption)
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                    .textCase(nil)
+                }
+            }
+        }
+    }
+
+    private var flatEntriesList: some View {
+        List {
+            ForEach(flatEntries) { entry in
+                importedEntryRow(entry)
+            }
         }
     }
 
@@ -782,22 +1047,64 @@ private struct RecentlyImportedSheet: View {
         }
     }
 
+    private var selectedEntriesForExport: [LibraryEntry] {
+        store.entries.filter { selectedEntryIDs.contains($0.id) }
+    }
+
+    private func exportSelectedEntries() {
+        do {
+            let data = try exportEntriesAsJSON(selectedEntriesForExport)
+            let filename = sanitizedBatchExportFilename()
+
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent(filename)
+                .appendingPathExtension("json")
+
+            try data.write(to: url, options: .atomic)
+            shareItem = ShareItem(url: url)
+        } catch {
+            exportErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func exportEntriesAsJSON(_ entries: [LibraryEntry]) throws -> Data {
+        let exportable = entries.map { entry in
+            ExportableLibraryEntry(
+                id: entry.id,
+                title: entry.title.trimmingCharacters(in: .whitespacesAndNewlines),
+                body: entry.attributedBody.string,
+                category: entry.category,
+                isFavorite: entry.isFavorite,
+                isVisible: entry.isVisible,
+                createdAt: entry.createdAt,
+                updatedAt: entry.updatedAt
+            )
+        }
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(exportable)
+    }
+
+    private func sanitizedBatchExportFilename() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        return "SelectedEntries_\(formatter.string(from: Date()))"
+    }
+
     private func deleteSelectedEntries() {
-        store.entries.removeAll { selectedEntryIDs.contains($0.id) }
+        store.deleteEntries(withIDs: selectedEntryIDs)
         selectedEntryIDs.removeAll()
         isSelecting = false
+        showSelectedOnly = false
     }
 
     private func applyCategory(_ category: EntryCategory) {
-        let now = Date()
-        for id in selectedEntryIDs {
-            guard var entry = store.entry(id: id) else { continue }
-            entry.category = category
-            entry.updatedAt = now
-            store.updateEntry(entry)
-        }
+        store.updateEntryCategories(ids: selectedEntryIDs, to: category)
         selectedEntryIDs.removeAll()
         isSelecting = false
+        showSelectedOnly = false
     }
 
     private func categoryName(for category: EntryCategory) -> String {
@@ -811,7 +1118,7 @@ private struct RecentlyImportedSheet: View {
     }
 
     private func importedRowTimestampText(_ date: Date?) -> String {
-        guard let date else { return "Unknown import time" }
+        guard let date else { return "No import timestamp" }
         let formatter = DateFormatter()
         formatter.dateFormat = "d MMM yyyy, h:mm:ss a"
         return formatter.string(from: date)
@@ -1114,7 +1421,7 @@ private struct ManageEntryDetail: View {
         .alert("Delete entry?", isPresented: $showDeleteConfirm) {
             Button("Delete", role: .destructive) {
                 let id = entry.id
-                store.entries.removeAll { $0.id == id }
+                store.deleteEntries(withIDs: [id])
                 selectedID = nil
                 isEditing = false
             }

@@ -182,10 +182,12 @@ private struct CategoryManagerView: View {
     @State private var showAddCategoryPrompt = false
     @State private var pendingNewCategoryName = ""
     @State private var pendingDeleteCategory: CategoryItem?
+    @State private var editMode: EditMode = .active
+    @State private var hasCapturedReorderUndoSnapshot = false
 
     var body: some View {
         List {
-            ForEach(store.sortedCategories(), id: \.id) { category in
+            ForEach(categoryRows) { category in
                 HStack(spacing: 12) {
                     if isEditing, category.id != .general {
                         TextField(
@@ -204,25 +206,31 @@ private struct CategoryManagerView: View {
 
                     Spacer()
 
-                    if isEditing, category.id != .general {
+                    if category.id != .general {
                         Button(role: .destructive) {
                             pendingDeleteCategory = category
                         } label: {
                             Image(systemName: "trash")
+                                .frame(width: 32, height: 32)
                         }
                         .buttonStyle(.borderless)
+                        .padding(.trailing, 32)
                     }
                 }
+                .moveDisabled(category.id == .general)
             }
+            .onMove(perform: moveCategories)
         }
         .navigationTitle("Categories")
         .navigationBarTitleDisplayMode(.inline)
+        .environment(\.editMode, $editMode)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Button(isEditing ? "Done" : "Edit") {
                     if isEditing {
                         commitCategoryRenames()
                     }
+                    hasCapturedReorderUndoSnapshot = false
                     isEditing.toggle()
                 }
             }
@@ -270,6 +278,35 @@ private struct CategoryManagerView: View {
         }
     }
 
+    private var categoryRows: [CategoryItem] {
+        let sorted = store.sortedCategories()
+        guard let general = sorted.first(where: { $0.id == .general }) else { return sorted }
+        let others = sorted.filter { $0.id != .general }
+        return [general] + others
+    }
+
+    private func moveCategories(from source: IndexSet, to destination: Int) {
+        if !hasCapturedReorderUndoSnapshot {
+            store.pushUndoSnapshot()
+            hasCapturedReorderUndoSnapshot = true
+        }
+
+        var rows = categoryRows
+        rows.move(fromOffsets: source, toOffset: destination)
+
+        guard let general = rows.first(where: { $0.id == .general }) else {
+            store.categories = rows
+            return
+        }
+
+        let others = rows.filter { $0.id != .general }
+        let reordered = [general] + others
+
+        store.categories = reordered.enumerated().map { index, item in
+            CategoryItem(id: item.id, name: item.name, order: index)
+        }
+    }
+
     private func commitCategoryRenames() {
         for category in store.sortedCategories() where category.id != .general {
             if let proposedName = editingCategoryNames[category.id] {
@@ -309,6 +346,7 @@ private struct LibraryManagerView: View {
     @State private var pendingNewLibraryName = ""
     @State private var pendingDeleteLibrary: LibraryCollection?
     @State private var editMode: EditMode = .inactive
+    @State private var hasCapturedReorderUndoSnapshot = false
 
     private var showingImportDestinationDialog: Binding<Bool> {
         Binding(
@@ -427,6 +465,7 @@ private struct LibraryManagerView: View {
                 } else {
                     editMode = .active
                 }
+                hasCapturedReorderUndoSnapshot = false
                 isEditing.toggle()
             }
         }
@@ -802,6 +841,11 @@ private struct LibraryManagerView: View {
     }
 
     private func moveLibraries(from source: IndexSet, to destination: Int) {
+        if !hasCapturedReorderUndoSnapshot {
+            store.pushUndoSnapshot()
+            hasCapturedReorderUndoSnapshot = true
+        }
+
         var reordered = store.libraries
         reordered.move(fromOffsets: source, toOffset: destination)
         store.libraries = reordered

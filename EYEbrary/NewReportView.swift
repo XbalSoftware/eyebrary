@@ -34,6 +34,25 @@ struct NewReportView: View {
     @State private var reportDate: Date = Date()
     @State private var planEntries: [PlanEntry] = []
 
+    private var currentSortMode: LibrarySortMode {
+        store.sortMode()
+    }
+
+    private var sortModeDisplayName: String {
+        switch currentSortMode {
+        case .manual:
+            return "Manual"
+        case .alphabeticalAZ:
+            return "A–Z"
+        case .alphabeticalZA:
+            return "Z–A"
+        case .newestUpdated:
+            return "Newest"
+        case .oldestUpdated:
+            return "Oldest"
+        }
+    }
+
     @State private var shareItem: ShareItem? = nil
     @State private var pendingDeleteEntryID: UUID? = nil
     @State private var showDeleteWarning: Bool = false
@@ -54,7 +73,7 @@ struct NewReportView: View {
             $0.body.localizedCaseInsensitiveContains(q)
         }
 
-        return filtered.sorted { (a, b) in
+        return filtered.sorted { a, b in
             if !q.isEmpty {
                 let aTitleMatch = a.title.localizedCaseInsensitiveContains(q)
                 let bTitleMatch = b.title.localizedCaseInsensitiveContains(q)
@@ -64,10 +83,27 @@ struct NewReportView: View {
                 }
             }
 
-            let ao = a.order ?? Int.max
-            let bo = b.order ?? Int.max
-            if ao != bo { return ao < bo }
-            return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
+            switch currentSortMode {
+            case .manual:
+                let ao = a.order ?? Int.max
+                let bo = b.order ?? Int.max
+                if ao != bo { return ao < bo }
+                return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
+
+            case .alphabeticalAZ:
+                return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
+
+            case .alphabeticalZA:
+                return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedDescending
+
+            case .newestUpdated:
+                if a.updatedAt != b.updatedAt { return a.updatedAt > b.updatedAt }
+                return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
+
+            case .oldestUpdated:
+                if a.updatedAt != b.updatedAt { return a.updatedAt < b.updatedAt }
+                return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
+            }
         }
     }
     private var orderedCategories: [CategoryItem] {
@@ -242,9 +278,75 @@ struct NewReportView: View {
                     }
                 } label: {
                     HStack(spacing: 6) {
-                        Text("Category:")
-                            .foregroundStyle(.secondary)
                         Text(categoryFilter.displayName(using: store))
+                            .lineLimit(1)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(.footnote)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.secondary.opacity(0.12))
+                    )
+                }
+                .buttonStyle(.plain)
+
+                Menu {
+                    Button {
+                        store.setSortMode(.manual)
+                    } label: {
+                        if currentSortMode == .manual {
+                            Label("Manual", systemImage: "checkmark")
+                        } else {
+                            Text("Manual")
+                        }
+                    }
+
+                    Button {
+                        store.setSortMode(.alphabeticalAZ)
+                    } label: {
+                        if currentSortMode == .alphabeticalAZ {
+                            Label("A–Z", systemImage: "checkmark")
+                        } else {
+                            Text("A–Z")
+                        }
+                    }
+
+                    Button {
+                        store.setSortMode(.alphabeticalZA)
+                    } label: {
+                        if currentSortMode == .alphabeticalZA {
+                            Label("Z–A", systemImage: "checkmark")
+                        } else {
+                            Text("Z–A")
+                        }
+                    }
+
+                    Button {
+                        store.setSortMode(.newestUpdated)
+                    } label: {
+                        if currentSortMode == .newestUpdated {
+                            Label("Newest", systemImage: "checkmark")
+                        } else {
+                            Text("Newest")
+                        }
+                    }
+
+                    Button {
+                        store.setSortMode(.oldestUpdated)
+                    } label: {
+                        if currentSortMode == .oldestUpdated {
+                            Label("Oldest", systemImage: "checkmark")
+                        } else {
+                            Text("Oldest")
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(sortModeDisplayName)
                             .lineLimit(1)
                         Image(systemName: "chevron.up.chevron.down")
                             .font(.footnote)
