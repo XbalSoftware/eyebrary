@@ -1332,10 +1332,48 @@ final class AppStore: ObservableObject {
         }
 
         do {
-            return try importEntriesFromEyeBraryLibraryPackage(at: packageURL)
+            return try importBundledDefaultLibraryPackage(at: packageURL)
         } catch {
             return nil
         }
+    }
+
+    private func importBundledDefaultLibraryPackage(at packageURL: URL) throws -> [LibraryEntry] {
+        let manifestURL = packageURL.appendingPathComponent("manifest.json")
+        let manifestData = try Data(contentsOf: manifestURL)
+        let manifest = try JSONDecoder.standard.decode(EyeBraryLibraryManifest.self, from: manifestData)
+
+        guard manifest.format == EyeBraryLibraryManifest.currentFormat,
+              manifest.formatVersion == EyeBraryLibraryManifest.currentFormatVersion else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+
+        let importedEntries: [LibraryEntry] = try manifest.entries.map { item in
+            let contentURL = packageURL.appendingPathComponent(item.contentFile)
+            let rtfData = try Data(contentsOf: contentURL)
+
+            let attributed = try NSAttributedString(
+                data: rtfData,
+                options: [.documentType: NSAttributedString.DocumentType.rtf],
+                documentAttributes: nil
+            )
+
+            return LibraryEntry(
+                id: item.id,
+                title: item.title,
+                body: attributed.string,
+                bodyRTFData: rtfData,
+                category: normalizedCategoryID(item.category),
+                isFavorite: item.isFavorite,
+                isVisible: item.isVisible,
+                order: item.order,
+                createdAt: item.createdAt,
+                updatedAt: item.updatedAt,
+                lastImportedAt: item.lastImportedAt
+            )
+        }
+
+        return importedEntries
     }
 
     private func importEntriesFromEyeBraryLibraryPackage(at packageURL: URL) throws -> [LibraryEntry] {
@@ -1373,7 +1411,7 @@ final class AppStore: ObservableObject {
             )
         }
 
-        return normalizeImportedEntries(importedEntries).map(normalizedImportedEntryIfNeeded)
+        return normalizeImportedEntries(importedEntries)
     }
 
     private func seedDefaults() {
@@ -1406,39 +1444,21 @@ final class AppStore: ObservableObject {
     private func defaultCategories() -> [CategoryItem] {
         [
             CategoryItem(id: .general, name: "General", order: 0),
-            CategoryItem(id: "dryEye", name: "Dry Eye", order: 1),
-            CategoryItem(id: "glaucoma", name: "Glaucoma", order: 2),
-            CategoryItem(id: "retina", name: "Retina", order: 3),
-            CategoryItem(id: "neuro", name: "Neuro", order: 4)
+            CategoryItem(id: "lids", name: "Lids", order: 1),
+            CategoryItem(id: "cornea", name: "Cornea", order: 2),
+            CategoryItem(id: "anterior-segment", name: "Anterior Segment", order: 3),
+            CategoryItem(id: "posterior-segment", name: "Posterior Segment", order: 4),
+            CategoryItem(id: "retina", name: "Retina", order: 5),
+            CategoryItem(id: "glaucoma", name: "Glaucoma", order: 6),
+            CategoryItem(id: "neuro", name: "Neuro", order: 7),
+            CategoryItem(id: "binocular-vision", name: "Binocular Vision", order: 8),
+            CategoryItem(id: "pediatrics", name: "Pediatrics", order: 9),
+            CategoryItem(id: "instructions", name: "Instructions", order: 10),
+            CategoryItem(id: "information", name: "Information", order: 11)
         ]
     }
 
     private func factoryDefaultTemplates() -> [LibraryEntry] {
-        [
-            LibraryEntry(
-                title: "DRY EYE CAUSED BY\nMEIBOMIAN GLAND\nDYSFUNCTION",
-                body: "Dry eye secondary to meibomian gland dysfunction/exposure OU.\n\nHot compresses 5–10 minutes daily, then gentle lid massage. Consider lid hygiene and preservative-free artificial tears as needed. If symptoms persist, consider anti-inflammatory dry eye treatment.",
-                category: "dryEye",
-                isFavorite: true,
-                isVisible: true,
-                order: 0
-            ),
-            LibraryEntry(
-                title: "RISK OF GLAUCOMA",
-                body: "Glaucoma suspect based on optic nerve/IOP risk factors.\n\nMonitor with periodic IOP checks, optic nerve/OCT imaging, and visual field testing. Escalate to treatment/referral if progression or consistently elevated pressures.",
-                category: "glaucoma",
-                isFavorite: true,
-                isVisible: true,
-                order: 1
-            ),
-            LibraryEntry(
-                title: "GLAUCOMA",
-                body: "Primary open-angle glaucoma.\n\nContinue/Initiate IOP-lowering therapy as indicated. Monitor with IOP, OCT, and VF at appropriate intervals. Consider ophthalmology co-management.",
-                category: "glaucoma",
-                isFavorite: false,
-                isVisible: true,
-                order: 2
-            )
-        ]
+        []
     }
 }
