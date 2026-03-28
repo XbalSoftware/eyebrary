@@ -56,6 +56,10 @@ struct SettingsView: View {
                 NavigationLink("Manage libraries") {
                     LibraryManagerView()
                 }
+
+                Text("Lets you import, export, delete, rename, and rearrange your libraries.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Categories") {
@@ -63,7 +67,7 @@ struct SettingsView: View {
                     CategoryManagerView()
                 }
 
-                Text("Categories control the chips shown at the top of New Report and Manage Library.")
+                Text("Lets you add, delete, and rearrange categories to help keep your libraries organized.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -97,6 +101,10 @@ struct SettingsView: View {
             Section {
                 NavigationLink("About EYEbrary") {
                     AboutView()
+                }
+
+                NavigationLink("Quick Start Guide") {
+                    QuickStartView()
                 }
             }
 
@@ -157,7 +165,7 @@ struct SettingsView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This will remove custom templates, categories, letterheads, and saved history.")
+            Text("This will remove custom templates, categories, letterheads, and saved history. It is strongly recommended to export any custom libraries before proceeding.")
         }
         .alert("Reset Complete", isPresented: Binding(
             get: { resetSuccessMessage != nil },
@@ -345,7 +353,7 @@ private struct LibraryManagerView: View {
     @State private var showAddLibraryPrompt = false
     @State private var pendingNewLibraryName = ""
     @State private var pendingDeleteLibrary: LibraryCollection?
-    @State private var editMode: EditMode = .inactive
+    @State private var editMode: EditMode = .active
     @State private var hasCapturedReorderUndoSnapshot = false
 
     private var showingImportDestinationDialog: Binding<Bool> {
@@ -461,9 +469,6 @@ private struct LibraryManagerView: View {
             Button(isEditing ? "Done" : "Edit") {
                 if isEditing {
                     commitLibraryRenames()
-                    editMode = .inactive
-                } else {
-                    editMode = .active
                 }
                 hasCapturedReorderUndoSnapshot = false
                 isEditing.toggle()
@@ -682,19 +687,17 @@ private struct LibraryManagerView: View {
                 }
                 .buttonStyle(.borderless)
 
-                if isEditing {
-                    Spacer()
-                        .frame(width: 20)
+                Spacer()
+                    .frame(width: 20)
 
-                    Button(role: .destructive) {
-                        pendingDeleteLibrary = library
-                    } label: {
-                        Image(systemName: "trash")
-                            .frame(width: 32, height: 32)
-                    }
-                    .buttonStyle(.borderless)
-                    .padding(.trailing, 16)
+                Button(role: .destructive) {
+                    pendingDeleteLibrary = library
+                } label: {
+                    Image(systemName: "trash")
+                        .frame(width: 32, height: 32)
                 }
+                .buttonStyle(.borderless)
+                .padding(.trailing, 16)
             }
         }
         .contentShape(Rectangle())
@@ -877,5 +880,135 @@ private struct LibraryManagerView: View {
             return "Delete \"\(library.name)\"? A new empty Default Library will be created automatically."
         }
         return "Delete \"\(library.name)\"? This library contains \(entryCount) entr\(entryCount == 1 ? "y" : "ies")."
+    }
+}
+
+private struct QuickStartView: View {
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Quick Start Guide")
+                        .font(.title2.weight(.semibold))
+
+                    Text("EYEbrary helps you build reusable libraries of patient education and treatment-plan content, then quickly assemble polished patient-facing reports.")
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.bottom, 4)
+
+                quickStartSection(
+                    title: "Getting started",
+                    systemImage: "play.circle",
+                    items: [
+                        "Start in New Report.",
+                        "Use the + button at the top right to create a custom entry by free-typing.",
+                        "Select entries from the sidebar to add them to your report.",
+                        "Tap an entry to edit its title or content.",
+                        "Use Expand Content for easier editing of longer text.",
+                        "Export the finished report as a PDF."
+                    ]
+                )
+
+                quickStartSection(
+                    title: "Using your library",
+                    systemImage: "books.vertical",
+                    items: [
+                        "Browse entries using the category selector at the top.",
+                        "Use search to quickly find specific topics.",
+                        "Sort entries to match your workflow.",
+                        "Use favorites to surface commonly used entries."
+                    ]
+                )
+
+                quickStartSection(
+                    title: "Managing your content",
+                    systemImage: "square.stack.3d.up",
+                    items: [
+                        "In the Library tab, you can create, edit, delete, search, sort, and organize entries.",
+                        "Use Batch Select (small icon above search bar) for bulk actions like recategorizing, deleting, or exporting multiple entries."
+                    ]
+                )
+
+                quickStartSection(
+                    title: "Importing and exporting",
+                    systemImage: "square.and.arrow.down.on.square",
+                    items: [
+                        "Import or export libraries in Settings → Manage libraries.",
+                        "Import into the active library or create a new one.",
+                        "Optional Normalize text on import can clean up formatting for imported content."
+                    ]
+                )
+
+                quickStartSection(
+                    title: "Customization",
+                    systemImage: "slider.horizontal.3",
+                    items: [
+                        "Edit categories in Settings.",
+                        "Import a PDF letterhead for reports.",
+                        "Organize libraries to match your workflow."
+                    ]
+                )
+
+                quickStartSection(
+                    title: "Privacy",
+                    systemImage: "lock.shield",
+                    items: [
+                        "Patient names are not stored in history.",
+                        "Restored drafts do not include patient names.",
+                        "Always review report content before sharing with a patient."
+                    ]
+                )
+
+                quickStartSection(
+                    title: "Helpful tips",
+                    systemImage: "lightbulb",
+                    items: [
+                        "Expand Content makes editing long entries easier.",
+                        "History lets you reopen recently cleared reports.",
+                        "Batch Select is the fastest way to organize many entries at once.",
+                        "With a keyboard, use ⌘Z and ⇧⌘Z for undo and redo.",
+                        "'Categories' are applied globally. Importing entries without a recognized category will place them in the 'General' category."
+                    ]
+                )
+            }
+            .padding()
+        }
+        .navigationTitle("Quick Start")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    @ViewBuilder
+    private func quickStartSection(title: String, systemImage: String, items: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: systemImage)
+                    .foregroundStyle(.tint)
+                    .font(.headline)
+                    .frame(width: 20)
+
+                Text(title)
+                    .font(.headline.weight(.semibold))
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(items, id: \.self) { item in
+                    HStack(alignment: .top, spacing: 10) {
+                        Text("•")
+                            .foregroundStyle(.secondary)
+                        Text(item)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .font(.subheadline)
+            .padding(.leading, 30)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.secondary.opacity(0.08))
+        )
     }
 }

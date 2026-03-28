@@ -110,6 +110,18 @@ Some versions of the application may include example or pre-installed library en
                 }
                 .buttonStyle(.plain)
 
+                Button {
+                    openURL(URL(string: "https://xbalsoftware.github.io/user-manual.html")!)
+                } label: {
+                    HStack {
+                        Text("Full User Manual")
+                        Spacer()
+                        Image(systemName: "arrow.up.right.square")
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .buttonStyle(.plain)
+
                 Link(destination: URL(string: "mailto:xbalsoftware@gmail.com")!) {
                     HStack {
                         Text("Email")
