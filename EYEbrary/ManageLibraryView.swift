@@ -1262,57 +1262,56 @@ private struct ManageEntryDetail: View {
             .padding(.horizontal)
             .padding(.top, 8)
 
-            HStack(alignment: .top) {
+            HStack(alignment: .center, spacing: 20) {
+                HStack(spacing: 12) {
+                    Text("Category")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                    Picker("Category", selection: $category) {
+                        let cats = store.categories.sorted { $0.order < $1.order }
+                        ForEach(cats) { item in
+                            Text(item.name).tag(item.id.isEmpty ? .general : item.id)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(minWidth: 180, alignment: .leading)
+                }
+
+                HStack(spacing: 12) {
+                    Text("Visible in New Report")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                    Button {
+                        isVisible.toggle()
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: isVisible ? "largecircle.fill.circle" : "circle")
+                                .font(.system(size: 18))
+                                .foregroundStyle(isVisible ? Color.accentColor : Color.secondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.leading, 100)
+
                 Spacer()
 
-                VStack(alignment: .trailing, spacing: 12) {
-                    HStack(spacing: 12) {
-                        Text("Category")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 110, alignment: .trailing)
-
-                        Picker("Category", selection: $category) {
-                            let cats = store.categories.sorted { $0.order < $1.order }
-                            ForEach(cats) { item in
-                                Text(item.name).tag(item.id.isEmpty ? .general : item.id)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .frame(width: 120, alignment: .trailing)
-                    }
-
-                    HStack(spacing: 12) {
-                        Text("Visible in New Report")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 150, alignment: .trailing)
-
-                        Toggle("", isOn: $isVisible)
-                            .labelsHidden()
-                            .frame(width: 120, alignment: .trailing)
-                    }
-
-                    HStack(spacing: 12) {
+                Button {
+                    isFavorite.toggle()
+                } label: {
+                    HStack(spacing: 8) {
                         Text("Favorite")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
-                            .frame(width: 110, alignment: .trailing)
 
-                        Button {
-                            isFavorite.toggle()
-                        } label: {
-                            HStack {
-                                Spacer()
-                                Image(systemName: isFavorite ? "star.fill" : "star")
-                                    .foregroundStyle(isFavorite ? Color.yellow : Color.secondary)
-                                    .font(.system(size: 22, weight: .semibold))
-                            }
-                            .frame(width: 120, alignment: .trailing)
-                        }
-                        .buttonStyle(.plain)
+                        Image(systemName: isFavorite ? "star.fill" : "star")
+                            .foregroundStyle(isFavorite ? Color.yellow : Color.secondary)
+                            .font(.system(size: 22, weight: .semibold))
                     }
                 }
+                .buttonStyle(.plain)
             }
             .padding(.horizontal)
 
