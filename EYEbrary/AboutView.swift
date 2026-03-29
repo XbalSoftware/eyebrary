@@ -59,7 +59,7 @@ Some versions of the application may include example or pre-installed library en
 
             Section("App Information") {
                 LabeledContent("Version") {
-                    Text(appVersionText.replacingOccurrences(of: "Version ", with: ""))
+                    Text(appVersionText)
                         .foregroundStyle(.secondary)
                 }
 
