@@ -1210,6 +1210,20 @@ final class AppStore: ObservableObject {
             selectedLetterheadName = name
         }
     }
+
+    func deleteLetterhead(named name: String) throws {
+        let targetURL = letterheadURL(named: name)
+
+        if FileManager.default.fileExists(atPath: targetURL.path) {
+            try FileManager.default.removeItem(at: targetURL)
+        }
+
+        letterheads.removeAll { $0 == name }
+
+        if selectedLetterheadName == name {
+            selectedLetterheadName = letterheads.first
+        }
+    }
     // MARK: - Persistence
 
     private func loadLibraries() {

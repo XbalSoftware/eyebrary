@@ -49,6 +49,7 @@ struct SettingsView: View {
     @State private var activeImportKind: ActiveImportKind?
     @State private var pendingImportKind: ActiveImportKind?
     @State private var letterheadImportErrorMessage: String?
+    @State private var pendingDeleteLetterheadName: String?
 
     var body: some View {
         Form {
@@ -94,6 +95,10 @@ struct SettingsView: View {
                             .padding(.leading, 12)
                         }
                         .buttonStyle(.plain)
+                    }
+                    .onDelete { indexSet in
+                        guard let index = indexSet.first else { return }
+                        pendingDeleteLetterheadName = store.letterheads[index]
                     }
                 }
             }
@@ -147,6 +152,28 @@ struct SettingsView: View {
                 letterheadImportErrorMessage = error.localizedDescription
                 pendingImportKind = nil
             }
+        }
+        .alert(
+            "Delete letterhead?",
+            isPresented: Binding(
+                get: { pendingDeleteLetterheadName != nil },
+                set: { if !$0 { pendingDeleteLetterheadName = nil } }
+            )
+        ) {
+            Button("Delete", role: .destructive) {
+                guard let name = pendingDeleteLetterheadName else { return }
+                do {
+                    try store.deleteLetterhead(named: name)
+                } catch {
+                    letterheadImportErrorMessage = error.localizedDescription
+                }
+                pendingDeleteLetterheadName = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingDeleteLetterheadName = nil
+            }
+        } message: {
+            Text("This will permanently remove the selected letterhead PDF from EYEbrary.")
         }
         .alert("Import Failed", isPresented: Binding(
             get: { letterheadImportErrorMessage != nil },
