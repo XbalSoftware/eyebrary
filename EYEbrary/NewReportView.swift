@@ -948,7 +948,8 @@ struct NewReportView: View {
                 reportTitle: reportTitle,
                 reportDate: reportDate,
                 entries: planEntries,
-                letterheadURL: store.selectedLetterheadName.map { store.letterheadURL(named: $0) } ?? store.bundledBlankLetterheadURL()
+                letterheadURL: store.selectedLetterheadName.map { store.letterheadURL(named: $0) } ?? store.bundledBlankLetterheadURL(),
+                safeZoneConfig: store.selectedLetterheadName.flatMap { store.safeZoneConfig(named: $0) }
             )
             shareItem = ShareItem(url: url)
         } catch {

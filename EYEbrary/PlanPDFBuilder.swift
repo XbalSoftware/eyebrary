@@ -17,15 +17,31 @@ enum PlanPDFBuilder {
         reportTitle: String,
         reportDate: Date,
         entries: [PlanEntry],
-        letterheadURL: URL?
+        letterheadURL: URL?,
+        safeZoneConfig: SafeZoneConfig?
     ) throws -> URL {
         let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent("EYEbrary-Report.pdf")
         let numberedOutputURL = FileManager.default.temporaryDirectory.appendingPathComponent("EYEbrary-Report-Numbered.pdf")
 
         let pageRect = CGRect(x: 0, y: 0, width: 612, height: 792)
         let renderer = UIGraphicsPDFRenderer(bounds: pageRect)
-        let contentStartY: CGFloat = 112
-        let contentBottomY: CGFloat = pageRect.height - 120
+        let W = pageRect.width, H = pageRect.height
+        let contentStartY:  CGFloat
+        let contentBottomY: CGFloat
+        let contentLeftX:   CGFloat
+        let contentRightX:  CGFloat
+        if let z = safeZoneConfig?.safeZone {
+            contentStartY  = z.minY * H
+            contentBottomY = z.maxY * H
+            contentLeftX   = z.minX * W
+            contentRightX  = z.maxX * W
+        } else {
+            contentStartY  = 112
+            contentBottomY = H - 120
+            contentLeftX   = 54
+            contentRightX  = W - 54
+        }
+        let contentWidth = contentRightX - contentLeftX
         let continuationReserve: CGFloat = 10
 
         try renderer.writePDF(to: outputURL) { context in
@@ -228,7 +244,7 @@ enum PlanPDFBuilder {
 
             func drawContinuationNote() {
                 let note = "Continued on next page"
-                let noteRect = CGRect(x: margin + 18, y: contentBottomY - continuationReserve, width: contentWidth - 18, height: 12)
+                let noteRect = CGRect(x: contentLeftX + 18, y: contentBottomY - continuationReserve, width: contentWidth - 18, height: 12)
                 (note as NSString).draw(in: noteRect, withAttributes: [
                     .font: continuationFont,
                     .foregroundColor: UIColor.darkGray
@@ -238,9 +254,7 @@ enum PlanPDFBuilder {
             context.beginPage()
             drawLetterhead(on: context)
 
-            let margin: CGFloat = 54
             var y: CGFloat = contentStartY
-            let contentWidth = pageRect.width - (margin * 2)
 
             let title = reportTitle.trimmingCharacters(in: .whitespacesAndNewlines)
             let headingFont = UIFont.systemFont(ofSize: 22, weight: .bold)
@@ -249,7 +263,7 @@ enum PlanPDFBuilder {
             let continuationFont = UIFont.italicSystemFont(ofSize: 9)
 
             if !title.isEmpty {
-                let titleRect = CGRect(x: margin, y: y, width: contentWidth, height: 28)
+                let titleRect = CGRect(x: contentLeftX, y: y, width: contentWidth, height: 28)
                 (title as NSString).draw(
                     in: titleRect,
                     withAttributes: [
@@ -266,8 +280,8 @@ enum PlanPDFBuilder {
 
             let trimmedPatientName = patientName.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmedPatientName.isEmpty {
-                let patientRect = CGRect(x: margin, y: y, width: contentWidth * 0.6, height: 18)
-                let dateRect = CGRect(x: margin + (contentWidth * 0.4), y: y, width: contentWidth * 0.6, height: 18)
+                let patientRect = CGRect(x: contentLeftX, y: y, width: contentWidth * 0.6, height: 18)
+                let dateRect = CGRect(x: contentLeftX + (contentWidth * 0.4), y: y, width: contentWidth * 0.6, height: 18)
 
                 ("Patient: \(trimmedPatientName)" as NSString).draw(in: patientRect, withAttributes: [
                     .font: subheadingFont,
@@ -320,7 +334,7 @@ enum PlanPDFBuilder {
                 }
 
                 if !entryTitle.isEmpty {
-                    let headerRect = CGRect(x: margin, y: y, width: contentWidth, height: headerHeight)
+                    let headerRect = CGRect(x: contentLeftX, y: y, width: contentWidth, height: headerHeight)
                     let headerPath = UIBezierPath(roundedRect: headerRect, cornerRadius: 12)
 
                     UIColor(white: 0.97, alpha: 1.0).setFill()
@@ -361,7 +375,7 @@ enum PlanPDFBuilder {
 
                     if y + fullBodyHeight <= contentBottomY {
                         fullBodyString.draw(
-                            with: CGRect(x: margin + bodyIndent, y: y, width: bodyWidth, height: fullBodyHeight + 4),
+                            with: CGRect(x: contentLeftX + bodyIndent, y: y, width: bodyWidth, height: fullBodyHeight + 4),
                             options: [.usesLineFragmentOrigin, .usesFontLeading],
                             context: nil
                         )
@@ -407,7 +421,7 @@ enum PlanPDFBuilder {
                                 context: nil
                             )
                             chunk.draw(
-                                with: CGRect(x: margin + bodyIndent, y: y, width: bodyWidth, height: ceil(usedRect.height) + 4),
+                                with: CGRect(x: contentLeftX + bodyIndent, y: y, width: bodyWidth, height: ceil(usedRect.height) + 4),
                                 options: [.usesLineFragmentOrigin, .usesFontLeading],
                                 context: nil
                             )
@@ -453,20 +467,31 @@ enum PlanPDFBuilder {
                     }
 
                     let pageLabel = "Page \(pageIndex + 1) of \(pageCount)"
-                    let footerFont = UIFont.systemFont(ofSize: 10)
-                    let footerRect = CGRect(x: 54, y: pageRect.height - 78, width: pageRect.width - 108, height: 14)
-                    (pageLabel as NSString).draw(
-                        in: footerRect,
-                        withAttributes: [
-                            .font: footerFont,
-                            .foregroundColor: UIColor.darkGray,
-                            .paragraphStyle: {
-                                let style = NSMutableParagraphStyle()
-                                style.alignment = .right
-                                return style
-                            }()
-                        ]
-                    )
+                    if let origin = safeZoneConfig?.pageNumberOrigin {
+                        let p = CGPoint(x: origin.x * W, y: origin.y * H)
+                        (pageLabel as NSString).draw(
+                            at: p,
+                            withAttributes: [
+                                .font: UIFont.systemFont(ofSize: 9),
+                                .foregroundColor: UIColor.darkGray
+                            ]
+                        )
+                    } else {
+                        let footerFont = UIFont.systemFont(ofSize: 10)
+                        let footerRect = CGRect(x: 54, y: pageRect.height - 78, width: pageRect.width - 108, height: 14)
+                        (pageLabel as NSString).draw(
+                            in: footerRect,
+                            withAttributes: [
+                                .font: footerFont,
+                                .foregroundColor: UIColor.darkGray,
+                                .paragraphStyle: {
+                                    let style = NSMutableParagraphStyle()
+                                    style.alignment = .right
+                                    return style
+                                }()
+                            ]
+                        )
+                    }
                 }
             }
 

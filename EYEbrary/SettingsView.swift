@@ -50,6 +50,9 @@ struct SettingsView: View {
     @State private var pendingImportKind: ActiveImportKind?
     @State private var letterheadImportErrorMessage: String?
     @State private var pendingDeleteLetterheadName: String?
+    @State private var editingLetterhead: EditingLetterhead?
+
+    private struct EditingLetterhead: Identifiable { let id: String }
 
     var body: some View {
         Form {
@@ -91,6 +94,14 @@ struct SettingsView: View {
                                 Text(name)
 
                                 Spacer()
+
+                                Button {
+                                    editingLetterhead = EditingLetterhead(id: name)
+                                } label: {
+                                    Image(systemName: "crop")
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.tint)
                             }
                             .padding(.leading, 12)
                         }
@@ -184,6 +195,26 @@ struct SettingsView: View {
             }
         } message: {
             Text(letterheadImportErrorMessage ?? "Unknown error")
+        }
+        .sheet(item: $editingLetterhead) { item in
+            let name = item.id
+            if let data = try? Data(contentsOf: store.letterheadURL(named: name)) {
+                SafeZoneEditorView(
+                    pdfData: data,
+                    initialSafeZone: store.safeZoneConfig(named: name)?.safeZone
+                        ?? SafeZoneEditorView.defaultSafeZone,
+                    initialPageNumberOrigin: store.safeZoneConfig(named: name)?.pageNumberOrigin
+                        ?? SafeZoneEditorView.defaultPageNumberOrigin,
+                    onSave: { zone, origin in
+                        store.setSafeZoneConfig(
+                            SafeZoneConfig(safeZone: zone, pageNumberOrigin: origin),
+                            for: name
+                        )
+                    }
+                )
+            } else {
+                Text("Couldn't open this letterhead.")
+            }
         }
         .alert("Reset everything?", isPresented: $showResetConfirm) {
             Button("Reset", role: .destructive) {

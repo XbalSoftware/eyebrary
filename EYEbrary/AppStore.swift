@@ -290,6 +290,11 @@ struct LetterheadState: Codable, Equatable {
     var selectedLetterheadName: String?
 }
 
+struct SafeZoneConfig: Codable, Equatable {
+    var safeZone: CGRect          // normalized 0...1, top-left origin
+    var pageNumberOrigin: CGPoint // normalized 0...1, top-left of the page-number stamp
+}
+
 struct UndoSnapshot: Codable, Equatable {
     var libraries: [LibraryCollection]
     var activeLibraryID: UUID?
@@ -394,6 +399,10 @@ final class AppStore: ObservableObject {
         didSet { persistLetterheads() }
     }
 
+    @Published var safeZoneConfigs: [String: SafeZoneConfig] = [:] {
+        didSet { persistSafeZoneConfigs() }
+    }
+
     var history: [SavedPlan] {
         get { plans }
         set { plans = newValue }
@@ -404,6 +413,7 @@ final class AppStore: ObservableObject {
     private let categoriesKey = "EYEbrary.categories.v1"
     private let plansKey = "EYEbrary.savedPlans.v1"
     private let letterheadsKey = "EYEbrary.letterheads.v1"
+    private let safeZoneConfigsKey = "EYEbrary.safeZoneConfigs.v1"
     private let launchAcknowledgementKey = "EYEbrary.hasAcknowledgedAppInformation.v1"
     private let bundledDefaultLibraryName = "Default Library"
     private let bundledDefaultLibraryExtension = "eyebrarylib"
@@ -427,6 +437,7 @@ final class AppStore: ObservableObject {
         loadLibraries()
         loadPlans()
         loadLetterheads()
+        loadSafeZoneConfigs()
         if categories.isEmpty { seedDefaultCategories() }
         if libraries.isEmpty { seedDefaults() }
         ensureAtLeastOneLibraryExists()
@@ -1219,11 +1230,17 @@ final class AppStore: ObservableObject {
         }
 
         letterheads.removeAll { $0 == name }
+        safeZoneConfigs[name] = nil
 
         if selectedLetterheadName == name {
             selectedLetterheadName = letterheads.first
         }
     }
+
+    func safeZoneConfig(named name: String) -> SafeZoneConfig? { safeZoneConfigs[name] }
+
+    func setSafeZoneConfig(_ config: SafeZoneConfig, for name: String) { safeZoneConfigs[name] = config }
+
     // MARK: - Persistence
 
     private func loadLibraries() {
@@ -1330,6 +1347,27 @@ final class AppStore: ObservableObject {
             let state = LetterheadState(letterheads: letterheads, selectedLetterheadName: selectedLetterheadName)
             let data = try JSONEncoder.standard.encode(state)
             UserDefaults.standard.set(data, forKey: letterheadsKey)
+        } catch {
+            // ignore
+        }
+    }
+
+    private func loadSafeZoneConfigs() {
+        guard let data = UserDefaults.standard.data(forKey: safeZoneConfigsKey) else {
+            safeZoneConfigs = [:]
+            return
+        }
+        do {
+            safeZoneConfigs = try JSONDecoder.standard.decode([String: SafeZoneConfig].self, from: data)
+        } catch {
+            safeZoneConfigs = [:]
+        }
+    }
+
+    private func persistSafeZoneConfigs() {
+        do {
+            let data = try JSONEncoder.standard.encode(safeZoneConfigs)
+            UserDefaults.standard.set(data, forKey: safeZoneConfigsKey)
         } catch {
             // ignore
         }
