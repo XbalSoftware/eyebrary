@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EYEbrary – Xbal Software</title>
+  <style>
+    :root {
+      --bg: #f7f9fc;
+      --card: #ffffff;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --accent: #2563eb;
+      --border: #e5e7eb;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.65;
+    }
+
+    .wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 32px 20px 60px;
+    }
+
+    .hero {
+      background: linear-gradient(135deg, #eef4ff 0%, #f9fbff 100%);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 32px 28px;
+      margin-bottom: 24px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 2.2rem;
+      line-height: 1.15;
+    }
+
+    .tagline {
+      margin: 0;
+      color: var(--muted);
+      font-size: 1.05rem;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 28px;
+      margin-bottom: 20px;
+    }
+
+    h2 {
+      margin-top: 0;
+      margin-bottom: 14px;
+      font-size: 1.35rem;
+    }
+
+    h3 {
+      margin-top: 22px;
+      margin-bottom: 8px;
+      font-size: 1.05rem;
+    }
+
+    p {
+      margin: 0 0 14px;
+    }
+
+    ul {
+      margin: 0 0 14px 22px;
+      padding: 0;
+    }
+
+    li {
+      margin-bottom: 8px;
+    }
+
+    a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    .small {
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    footer {
+      margin-top: 18px;
+      color: var(--muted);
+      font-size: 0.92rem;
+      text-align: center;
+    }
+
+    code {
+      background: #f3f4f6;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 2px 6px;
+      font-size: 0.95em;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <h1>EYEbrary</h1>
+      <p class="tagline">A patient education and exam summary generator for eye care professionals.</p>
+    </section>
+
+    <section class="card">
+      <h2>About EYEbrary</h2>
+      <p>
+        EYEbrary is an iPad app designed to help eye care professionals create clear,
+        patient-friendly written summaries following an eye examination.
+      </p>
+      <p>
+        Clinicians can select starter templates, edit the text freely, and generate
+        polished PDF reports for patients. The app is intended as a documentation and
+        patient-education tool. It does not provide automated diagnosis or treatment recommendations.
+      </p>
+      <p>
+        All clinical information included in generated reports is selected, reviewed,
+        and edited by the clinician using the app.
+      </p>
+    </section>
+
+    <section class="card" id="support">
+      <h2>Support</h2>
+      <p>
+        For questions, feedback, or support requests, please contact:
+      </p>
+      <p>
+        <strong>Email:</strong>
+        <a href="mailto:xbalsoftware@gmail.com">xbalsoftware@gmail.com</a>
+      </p>
+      <p class="small">
+        Developer: Xbal Software (operated by Simon Reid)
+      </p>
+    </section>
+
+    <section class="card" id="privacy">
+      <h2>Privacy Policy</h2>
+      <p><strong>Effective Date:</strong> March 29, 2026</p>
+
+      <p>
+        This Privacy Policy explains how the EYEbrary application (“the App”) handles information.
+      </p>
+
+      <h3>Information Collection</h3>
+      <p>
+        The App does not collect any data from users, including personal information,
+        usage data, diagnostics, or identifiers.
+      </p>
+      <p>
+        The App does not collect, store, transmit, or share personal information with the developer.
+      </p>
+      <p>
+        All information entered into the App remains on the user’s device unless the user chooses
+        to export or share a generated document.
+      </p>
+
+      <h3>Accounts</h3>
+      <p>
+        The App does not require user accounts or sign-in.
+      </p>
+
+      <h3>Patient Information</h3>
+      <p>
+        Users may optionally enter patient names or other clinical information while preparing
+        patient summaries or reports. This information is used only on the device to create documents.
+        The developer does not receive, access, or store this information.
+      </p>
+
+      <h3>Data Storage</h3>
+      <p>
+        Information entered into the App is processed locally on the device. The App is not designed
+        to function as a long-term patient record or electronic medical record system.
+      </p>
+      <p>
+        Once the clinician clears the form, patient-identifying information entered for that report
+        is not retained by the App’s working form or history view.
+      </p>
+      <p>
+        Data stored within the App may be included in device backups, such as iCloud backups,
+        depending on the user’s device settings. The developer does not have access to this data.
+      </p>
+
+      <h3>Data Transmission</h3>
+      <p>
+        The App does not transmit information to the developer or to external servers.
+      </p>
+      <p>
+        If the user chooses to share or save a generated PDF, that action occurs through services
+        controlled by the user’s device, such as Mail, printing, AirDrop, Files, or other sharing options.
+      </p>
+
+      <h3>Analytics and Tracking</h3>
+      <p>
+        The App does not use analytics services, advertising frameworks, tracking technologies,
+        or third-party data collection.
+      </p>
+
+      <h3>Third-Party Services</h3>
+      <p>
+        The App does not integrate with third-party services for the purpose of collecting or processing
+        personal information.
+      </p>
+
+      <h3>Security</h3>
+      <p>
+        Because information handled by the App remains on the user’s device, data security depends in part
+        on the security of that device and the user’s chosen sharing methods. Users are responsible for protecting
+        their devices and exported documents in accordance with applicable privacy obligations.
+      </p>
+
+      <h3>Professional Responsibility</h3>
+      <p>
+        Users are responsible for ensuring that their use of the App complies with applicable privacy laws,
+        professional standards, and regulatory requirements in their jurisdiction.
+      </p>
+
+      <h3>Changes to This Policy</h3>
+      <p>
+        This Privacy Policy may be updated from time to time. Any changes will be reflected by updating
+        the effective date shown above.
+      </p>
+
+      <h3>Contact</h3>
+      <p>
+        If you have questions about this Privacy Policy, please contact
+        <a href="mailto:xbalsoftware@gmail.com">xbalsoftware@gmail.com</a>.
+      </p>
+    </section>
+
+    <footer>
+      © 2026 Xbal Software. All rights reserved.
+    </footer>
+  </div>
+</body>
+</html>
