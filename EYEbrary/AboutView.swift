@@ -3,9 +3,9 @@ import Foundation
 import UIKit
 
 struct AboutView: View {
-    private let websiteURL = URL(string: "https://xbalsoftware.github.io/")!
-    private let privacyURL = URL(string: "https://xbalsoftware.github.io/#privacy")!
-    private let supportURL = URL(string: "https://xbalsoftware.github.io/#support")!
+    private let websiteURL = URL(string: "https://xbalsoftware.github.io/eyebrary/")!
+    private let privacyURL = URL(string: "https://xbalsoftware.github.io/eyebrary/#privacy")!
+    private let supportURL = URL(string: "https://xbalsoftware.github.io/eyebrary/#support")!
 
     private var appVersionText: String {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
@@ -111,7 +111,7 @@ Some versions of the application may include example or pre-installed library en
                 .buttonStyle(.plain)
 
                 Button {
-                    openURL(URL(string: "https://xbalsoftware.github.io/user-manual.html")!)
+                    openURL(URL(string: "https://xbalsoftware.github.io/eyebrary/user-manual.html")!)
                 } label: {
                     HStack {
                         Text("Full User Manual")
