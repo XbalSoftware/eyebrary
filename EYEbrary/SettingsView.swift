@@ -29,6 +29,7 @@ private enum TemplateImportMode: String, CaseIterable, Identifiable {
 private enum ActiveImportKind {
     case library
     case letterhead
+    case backupRestore
 }
 
 private enum LibraryImportDestination {
@@ -51,6 +52,11 @@ struct SettingsView: View {
     @State private var letterheadImportErrorMessage: String?
     @State private var pendingDeleteLetterheadName: String?
     @State private var editingLetterhead: EditingLetterhead?
+    @State private var backupDocument: BackupDocument?
+    @State private var showBackupExporter = false
+    @State private var pendingRestoreBackup: EYEbraryBackup?
+    @State private var backupErrorMessage: String?
+    @State private var restoreSuccessMessage: String?
 
     private struct EditingLetterhead: Identifiable { let id: String }
 
@@ -124,6 +130,35 @@ struct SettingsView: View {
                 }
             }
 
+            Section("Backup") {
+                Button("Back Up Entire App") {
+                    backupDocument = BackupDocument(backup: store.makeAppBackup())
+                    showBackupExporter = true
+                }
+                .fileExporter(
+                    isPresented: $showBackupExporter,
+                    document: backupDocument,
+                    contentType: .json,
+                    defaultFilename: backupDefaultFilename
+                ) { result in
+                    backupDocument = nil
+                    if case .failure(let error) = result {
+                        backupErrorMessage = error.localizedDescription
+                    }
+                }
+
+                // Presented through the Form-level fileImporter below — a second
+                // .fileImporter in the same hierarchy silently never fires.
+                Button("Restore from App Backup") {
+                    pendingImportKind = .backupRestore
+                    activeImportKind = .backupRestore
+                }
+
+                Text("Saves all libraries, categories, and letterheads (including their safe zone settings) into a single file. Report history and in-progress reports are not included.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Reset") {
                 Button("Reset App to Factory Defaults", role: .destructive) {
                     showResetConfirm = true
@@ -133,14 +168,15 @@ struct SettingsView: View {
         .navigationTitle("Settings")
         .fileImporter(
             isPresented: Binding(
-                get: { activeImportKind == .letterhead },
+                get: { activeImportKind == .letterhead || activeImportKind == .backupRestore },
                 set: { if !$0 { activeImportKind = nil } }
             ),
-            allowedContentTypes: [.pdf],
+            allowedContentTypes: activeImportKind == .backupRestore ? [.json] : [.pdf],
             allowsMultipleSelection: false
         ) { result in
             let importKind = pendingImportKind
             activeImportKind = nil
+            pendingImportKind = nil
 
             do {
                 let urls = try result.get()
@@ -155,13 +191,22 @@ struct SettingsView: View {
                 switch importKind {
                 case .letterhead:
                     try store.addLetterhead(from: url)
-                    pendingImportKind = nil
+                case .backupRestore:
+                    let data = try Data(contentsOf: url)
+                    let backup = try JSONDecoder.standard.decode(EYEbraryBackup.self, from: data)
+                    guard !backup.libraries.isEmpty else { throw AppBackupError.emptyBackup }
+                    pendingRestoreBackup = backup
                 case .library, .none:
-                    pendingImportKind = nil
+                    break
                 }
             } catch {
-                letterheadImportErrorMessage = error.localizedDescription
-                pendingImportKind = nil
+                if importKind == .backupRestore {
+                    backupErrorMessage = error is DecodingError
+                        ? "This file couldn't be read as an EYEbrary backup."
+                        : error.localizedDescription
+                } else {
+                    letterheadImportErrorMessage = error.localizedDescription
+                }
             }
         }
         .alert(
@@ -235,6 +280,63 @@ struct SettingsView: View {
         } message: {
             Text(resetSuccessMessage ?? "")
         }
+        .alert(
+            "Restore from backup?",
+            isPresented: Binding(
+                get: { pendingRestoreBackup != nil },
+                set: { if !$0 { pendingRestoreBackup = nil } }
+            )
+        ) {
+            Button("Restore", role: .destructive) {
+                guard let backup = pendingRestoreBackup else { return }
+                do {
+                    try store.restoreAppBackup(backup)
+                    restoreSuccessMessage = "Your libraries and letterheads have been restored from the backup."
+                } catch {
+                    backupErrorMessage = error.localizedDescription
+                }
+                pendingRestoreBackup = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingRestoreBackup = nil
+            }
+        } message: {
+            Text(restoreConfirmationMessage)
+        }
+        .alert("Backup Failed", isPresented: Binding(
+            get: { backupErrorMessage != nil },
+            set: { if !$0 { backupErrorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) {
+                backupErrorMessage = nil
+            }
+        } message: {
+            Text(backupErrorMessage ?? "Unknown error")
+        }
+        .alert("Restore Complete", isPresented: Binding(
+            get: { restoreSuccessMessage != nil },
+            set: { if !$0 { restoreSuccessMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) {
+                restoreSuccessMessage = nil
+            }
+        } message: {
+            Text(restoreSuccessMessage ?? "")
+        }
+    }
+
+    private var backupDefaultFilename: String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return "EYEbrary Backup \(formatter.string(from: Date()))"
+    }
+
+    private var restoreConfirmationMessage: String {
+        guard let backup = pendingRestoreBackup else { return "" }
+        let libraryCount = backup.libraries.count
+        let letterheadCount = backup.letterheads.count
+        let exportedOn = backup.exportedAt.formatted(date: .abbreviated, time: .omitted)
+        return "This will replace all current libraries, categories, and letterheads with the backup from \(exportedOn) (\(libraryCount) \(libraryCount == 1 ? "library" : "libraries"), \(letterheadCount) \(letterheadCount == 1 ? "letterhead" : "letterheads")). This cannot be undone."
     }
 
 }
@@ -656,7 +758,8 @@ private struct LibraryManagerView: View {
                     pendingImportKind = nil
                 }
 
-            case nil:
+            case .backupRestore, nil:
+                // .backupRestore is only ever set (and handled) in SettingsView.
                 if didStartAccessing {
                     url.stopAccessingSecurityScopedResource()
                 }

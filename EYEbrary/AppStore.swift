@@ -1255,6 +1255,70 @@ final class AppStore: ObservableObject {
 
     func setSafeZoneConfig(_ config: SafeZoneConfig, for name: String) { safeZoneConfigs[name] = config }
 
+    // MARK: - Full app backup / restore
+
+    /// Everything a fresh install needs to become this install: all libraries,
+    /// the global categories, and every letterhead's PDF bytes + safe-zone
+    /// calibration. History and the autosaved draft are deliberately excluded
+    /// (see AppBackup.swift).
+    func makeAppBackup() -> EYEbraryBackup {
+        var backupLetterheads: [BackupLetterhead] = []
+        for name in letterheads {
+            guard let pdfData = try? Data(contentsOf: letterheadURL(named: name)) else { continue }
+            backupLetterheads.append(
+                BackupLetterhead(name: name, pdfData: pdfData, safeZoneConfig: safeZoneConfigs[name])
+            )
+        }
+        return EYEbraryBackup(
+            libraries: libraries,
+            activeLibraryID: activeLibraryID,
+            categories: categories,
+            letterheads: backupLetterheads,
+            selectedLetterheadName: selectedLetterheadName
+        )
+    }
+
+    /// Wholesale replace from a backup: libraries, categories, letterheads
+    /// (files on disk + safe zones + selection). Letterhead files are written
+    /// first so a disk error aborts before any in-memory state changes.
+    func restoreAppBackup(_ backup: EYEbraryBackup) throws {
+        guard !backup.libraries.isEmpty else { throw AppBackupError.emptyBackup }
+
+        let directory = letterheadsDirectoryURL()
+        let existingFiles = (try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil)) ?? []
+        for url in existingFiles {
+            try? FileManager.default.removeItem(at: url)
+        }
+        for letterhead in backup.letterheads {
+            try letterhead.pdfData.write(to: letterheadURL(named: letterhead.name))
+        }
+
+        libraries = backup.libraries
+        activeLibraryID = backup.activeLibraryID ?? backup.libraries.first?.id
+
+        // Categories are global and General is the pinned, undeletable default —
+        // guarantee both survive a backup written by any future/foreign source.
+        var restoredCategories = backup.categories
+        if restoredCategories.isEmpty {
+            restoredCategories = defaultCategories()
+        } else if !restoredCategories.contains(where: { $0.id == .general }) {
+            restoredCategories.insert(CategoryItem(id: .general, name: "General", order: 0), at: 0)
+        }
+        categories = restoredCategories
+
+        letterheads = backup.letterheads
+            .map(\.name)
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        safeZoneConfigs = Dictionary(
+            uniqueKeysWithValues: backup.letterheads.compactMap { letterhead in
+                letterhead.safeZoneConfig.map { (letterhead.name, $0) }
+            }
+        )
+        selectedLetterheadName = backup.selectedLetterheadName
+            .flatMap { letterheads.contains($0) ? $0 : nil } ?? letterheads.first
+    }
+
     // MARK: - Persistence
 
     private func loadLibraries() {

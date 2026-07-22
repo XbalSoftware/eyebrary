@@ -117,6 +117,36 @@ verification.**)
 - `NewReportView`: a "Text size" menu chip beside the letterhead picker — Standard (10 pt) /
   Large (12 pt) / Extra large (14 pt) — passed to `buildPDF` on export.
 
+### Whole-app backup / restore (Settings → Backup)
+
+Added 2026-07-21, same session as the pagination work. **Awaiting Simon's build + verification.**
+
+- **`AppBackup.swift`** (new file; auto-registers via the project's synchronized folder) —
+  `EYEbraryBackup` (all libraries + activeLibraryID, global categories, letterheads as
+  name + PDF bytes + `SafeZoneConfig`, letterhead selection), `BackupLetterhead`,
+  `BackupDocument` (the minimal FileDocument for `.fileExporter`), `AppBackupError`.
+  Modeled on EYEreport's `AppBackup.swift`. **History and the autosaved draft are
+  deliberately excluded** — nothing report-shaped leaves in a backup file.
+- **`AppStore.makeAppBackup()` / `restoreAppBackup(_:)`** — restore is a wholesale replace:
+  letterhead PDFs are written to disk FIRST (so a disk error aborts before any state
+  changes), then libraries/categories/letterheads/safe zones/selection are assigned through
+  the usual `@Published` didSet persistence. Defensive rules: a backup with zero libraries is
+  rejected; empty categories fall back to the defaults; a missing `General` category is
+  re-inserted; a selection not present in the backup falls back to the first letterhead.
+  Restore also clears any orphaned files in the Letterheads directory. Not undoable —
+  guarded by a confirmation alert instead.
+- **Settings UI** — a "Backup" section directly above Reset: "Back Up Entire App"
+  (`.fileExporter`, JSON, default name "EYEbrary Backup yyyy-MM-dd") and "Restore from App
+  Backup". Restore decodes, then confirms with the backup's date + library/letterhead counts
+  before replacing; success and failure alerts included.
+
+  **Lesson (verified on device):** a second `.fileImporter` lower in the same hierarchy as
+  the Form-level letterhead importer silently never presents — the restore button did
+  nothing. Restore is therefore routed through the ONE Form-level `.fileImporter`, switched
+  by `ActiveImportKind` (now `library` / `letterhead` / `backupRestore`) with
+  `allowedContentTypes` chosen per kind. Any future importer in SettingsView must join that
+  switch, not add another `.fileImporter`.
+
 ### Verification checklist (after building)
 
 1. A numbered list whose items wrap: every wrapped line should align exactly under the text
@@ -127,6 +157,9 @@ verification.**)
    the wrap column, "Continued on next page" note present, "Page X of Y" correct).
 4. Export at Large / Extra large: headers, Patient/Date line, and body all scale; nothing
    clips; pagination stays clean.
+5. Backup: Settings → Back Up Entire App saves a JSON to Files; after a Reset (or on another
+   device), Restore from App Backup brings back every library, category, and letterhead with
+   its safe zone and selection intact.
 
 ## Pre-release checklist (do these last, before submitting the 1.2 update)
 
