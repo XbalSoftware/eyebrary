@@ -418,6 +418,7 @@ final class AppStore: ObservableObject {
     private let bundledDefaultLibraryName = "Default Library"
     private let bundledDefaultLibraryExtension = "eyebrarylib"
     private let normalizeTextOnImportKey = "EYEbrary.normalizeTextOnImport.v1"
+    private let reportFontSizeKey = "EYEbrary.reportFontSize.v1"
 
     private var isSynchronizingLibraryState = false
     private var undoStack: [UndoSnapshot] = []
@@ -430,6 +431,19 @@ final class AppStore: ObservableObject {
             return true
         }
         return UserDefaults.standard.bool(forKey: normalizeTextOnImportKey)
+    }
+
+    /// Body font size (points) for generated report PDFs. 10 is the historical
+    /// default; larger sizes are offered for patients with low vision.
+    var reportFontSize: Double {
+        get {
+            let stored = UserDefaults.standard.double(forKey: reportFontSizeKey)
+            return stored == 0 ? 10 : stored
+        }
+        set {
+            objectWillChange.send()
+            UserDefaults.standard.set(newValue, forKey: reportFontSizeKey)
+        }
     }
     
     init() {

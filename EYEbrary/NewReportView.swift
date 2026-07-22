@@ -764,6 +764,39 @@ struct NewReportView: View {
                 }
                 .buttonStyle(.plain)
 
+                Menu {
+                    ForEach(ReportTextSize.allCases) { size in
+                        Button {
+                            store.reportFontSize = size.points
+                        } label: {
+                            if store.reportFontSize == size.points {
+                                Label(size.title, systemImage: "checkmark")
+                            } else {
+                                Text(size.title)
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "textformat.size")
+                            .font(.body)
+                        Text(currentReportTextSizeTitle)
+                            .font(.body)
+                            .lineLimit(1)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(Color.secondary.opacity(0.12))
+                    )
+                }
+                .buttonStyle(.plain)
+
                 Spacer()
             }
             .padding([.horizontal, .bottom])
@@ -941,6 +974,10 @@ struct NewReportView: View {
         selectedEntryID = nil
     }
 
+    private var currentReportTextSizeTitle: String {
+        ReportTextSize.allCases.first(where: { $0.points == store.reportFontSize })?.title ?? "Custom"
+    }
+
     private func generateAndSharePDF() {
         do {
             let url = try PlanPDFBuilder.buildPDF(
@@ -949,11 +986,38 @@ struct NewReportView: View {
                 reportDate: reportDate,
                 entries: planEntries,
                 letterheadURL: store.selectedLetterheadName.map { store.letterheadURL(named: $0) } ?? store.bundledBlankLetterheadURL(),
-                safeZoneConfig: store.selectedLetterheadName.flatMap { store.safeZoneConfig(named: $0) }
+                safeZoneConfig: store.selectedLetterheadName.flatMap { store.safeZoneConfig(named: $0) },
+                bodyFontSize: CGFloat(store.reportFontSize)
             )
             shareItem = ShareItem(url: url)
         } catch {
             print("PDF export failed:", error)
+        }
+    }
+}
+
+/// PDF body-text sizes offered in the New Report toolbar. Larger sizes are for
+/// patients with low vision who need larger print.
+private enum ReportTextSize: CaseIterable, Identifiable {
+    case standard
+    case large
+    case extraLarge
+
+    var id: Self { self }
+
+    var points: Double {
+        switch self {
+        case .standard: return 10
+        case .large: return 12
+        case .extraLarge: return 14
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .standard: return "Standard"
+        case .large: return "Large"
+        case .extraLarge: return "Extra large"
         }
     }
 }

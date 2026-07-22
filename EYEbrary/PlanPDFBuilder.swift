@@ -18,7 +18,8 @@ enum PlanPDFBuilder {
         reportDate: Date,
         entries: [PlanEntry],
         letterheadURL: URL?,
-        safeZoneConfig: SafeZoneConfig?
+        safeZoneConfig: SafeZoneConfig?,
+        bodyFontSize: CGFloat = 10
     ) throws -> URL {
         let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent("EYEbrary-Report.pdf")
         let numberedOutputURL = FileManager.default.temporaryDirectory.appendingPathComponent("EYEbrary-Report-Numbered.pdf")
@@ -45,6 +46,15 @@ enum PlanPDFBuilder {
         let continuationReserve: CGFloat = 10
 
         try renderer.writePDF(to: outputURL) { context in
+            let headingFont = UIFont.systemFont(ofSize: 22, weight: .bold)
+            let subheadingFont = UIFont.systemFont(ofSize: max(12, bodyFontSize + 2), weight: .semibold)
+            let entryHeaderFont = UIFont.systemFont(ofSize: max(12, bodyFontSize + 2), weight: .bold)
+            let bodyFont = UIFont.systemFont(ofSize: bodyFontSize)
+            let continuationFont = UIFont.italicSystemFont(ofSize: 9)
+            let bodyLineHeight = ceil(bodyFont.lineHeight)
+
+            var y: CGFloat = contentStartY
+
             func drawLetterhead(on context: UIGraphicsPDFRendererContext) {
                 if let letterheadURL,
                    let pdfDoc = PDFDocument(url: letterheadURL),
@@ -63,185 +73,6 @@ enum PlanPDFBuilder {
                 }
             }
 
-            func fittingLength(for attributedString: NSAttributedString, width: CGFloat, maxHeight: CGFloat) -> Int {
-                guard attributedString.length > 0, maxHeight > 0 else { return 0 }
-
-                var low = 0
-                var high = attributedString.length
-                var best = 0
-
-                while low <= high {
-                    let mid = (low + high) / 2
-                    let testRange = NSRange(location: 0, length: mid)
-                    let testString = attributedString.attributedSubstring(from: testRange)
-                    let rect = testString.boundingRect(
-                        with: CGSize(width: width, height: .greatestFiniteMagnitude),
-                        options: [.usesLineFragmentOrigin, .usesFontLeading],
-                        context: nil
-                    )
-
-                    if ceil(rect.height) <= maxHeight {
-                        best = mid
-                        low = mid + 1
-                    } else {
-                        high = mid - 1
-                    }
-                }
-
-                return best
-            }
-
-            func splitCreatesWidowOrOrphan(
-                for attributedString: NSAttributedString,
-                splitLength: Int,
-                width: CGFloat,
-                bodyFont: UIFont,
-                minimumLinesAtBottom: Int = 3,
-                minimumLinesAtTop: Int = 2
-            ) -> Bool {
-                guard splitLength > 0, splitLength < attributedString.length else { return false }
-
-                let lineHeight = ceil(bodyFont.lineHeight)
-                let minimumBottomHeight = CGFloat(minimumLinesAtBottom) * lineHeight
-                let minimumTopHeight = CGFloat(minimumLinesAtTop) * lineHeight
-
-                let bottomRect = attributedString.attributedSubstring(from: NSRange(location: 0, length: splitLength)).boundingRect(
-                    with: CGSize(width: width, height: .greatestFiniteMagnitude),
-                    options: [.usesLineFragmentOrigin, .usesFontLeading],
-                    context: nil
-                )
-                let topRect = attributedString.attributedSubstring(from: NSRange(location: splitLength, length: attributedString.length - splitLength)).boundingRect(
-                    with: CGSize(width: width, height: .greatestFiniteMagnitude),
-                    options: [.usesLineFragmentOrigin, .usesFontLeading],
-                    context: nil
-                )
-
-                return ceil(bottomRect.height) < minimumBottomHeight || ceil(topRect.height) < minimumTopHeight
-            }
-            func bestSplitLength(
-                for attributedString: NSAttributedString,
-                width: CGFloat,
-                maxHeight: CGFloat,
-                bodyFont: UIFont,
-                minimumLinesAtBottom: Int = 3,
-                minimumLinesAtTop: Int = 2
-            ) -> Int {
-                let rawFit = fittingLength(for: attributedString, width: width, maxHeight: maxHeight)
-                guard rawFit > 0 else { return 0 }
-
-                if rawFit >= attributedString.length {
-                    return rawFit
-                }
-
-                let text = attributedString.string as NSString
-                let candidateRange = NSRange(location: 0, length: rawFit)
-
-                var candidates: [Int] = [rawFit]
-
-                let sentenceRange = text.range(of: ". ", options: .backwards, range: candidateRange)
-                if sentenceRange.location != NSNotFound, sentenceRange.location > 0 {
-                    candidates.append(sentenceRange.location + 1)
-                }
-
-                let whitespaceRange = text.rangeOfCharacter(
-                    from: .whitespacesAndNewlines,
-                    options: .backwards,
-                    range: candidateRange
-                )
-                if whitespaceRange.location != NSNotFound, whitespaceRange.location > 0 {
-                    candidates.append(whitespaceRange.location)
-                }
-
-                let sortedCandidates = candidates.sorted(by: >)
-
-                // 1. Strict rule (3 / 2)
-                for candidate in sortedCandidates {
-                    guard candidate > 0 else { continue }
-                    if candidate >= attributedString.length { return candidate }
-
-                    if !splitCreatesWidowOrOrphan(
-                        for: attributedString,
-                        splitLength: candidate,
-                        width: width,
-                        bodyFont: bodyFont,
-                        minimumLinesAtBottom: minimumLinesAtBottom,
-                        minimumLinesAtTop: minimumLinesAtTop
-                    ) {
-                        return candidate
-                    }
-                }
-
-                // 2. Fallback rule (2 / 2)
-                for candidate in sortedCandidates {
-                    guard candidate > 0 else { continue }
-                    if candidate >= attributedString.length { return candidate }
-
-                    if !splitCreatesWidowOrOrphan(
-                        for: attributedString,
-                        splitLength: candidate,
-                        width: width,
-                        bodyFont: bodyFont,
-                        minimumLinesAtBottom: 2,
-                        minimumLinesAtTop: 2
-                    ) {
-                        return candidate
-                    }
-                }
-
-                // 3. Final fallback — avoid only a single-line orphan
-                let lineHeight = ceil(bodyFont.lineHeight)
-
-                for candidate in sortedCandidates {
-                    guard candidate > 0 else { continue }
-                    if candidate >= attributedString.length { return candidate }
-
-                    let bottomRect = attributedString.attributedSubstring(
-                        from: NSRange(location: 0, length: candidate)
-                    ).boundingRect(
-                        with: CGSize(width: width, height: .greatestFiniteMagnitude),
-                        options: [.usesLineFragmentOrigin, .usesFontLeading],
-                        context: nil
-                    )
-
-                    if ceil(bottomRect.height) >= lineHeight {
-                        return candidate
-                    }
-                }
-
-                return 0
-            }
-            func normalizedBodyAttributedString(for attributedString: NSAttributedString, baseFont: UIFont) -> NSAttributedString {
-                let mutable = NSMutableAttributedString(attributedString: attributedString)
-                let fullRange = NSRange(location: 0, length: mutable.length)
-
-                guard fullRange.length > 0 else { return mutable }
-
-                mutable.enumerateAttributes(in: fullRange, options: []) { attrs, range, _ in
-                    let currentFont = (attrs[.font] as? UIFont) ?? baseFont
-                    let descriptor = currentFont.fontDescriptor
-                    let traits = descriptor.symbolicTraits
-                    let normalizedDescriptor = baseFont.fontDescriptor.withSymbolicTraits(traits) ?? baseFont.fontDescriptor
-                    let normalizedFont = UIFont(descriptor: normalizedDescriptor, size: baseFont.pointSize)
-
-                    mutable.addAttribute(.font, value: normalizedFont, range: range)
-                    mutable.addAttribute(.foregroundColor, value: UIColor.black, range: range)
-
-                    if let paragraphStyle = attrs[.paragraphStyle] as? NSParagraphStyle {
-                        let style = (paragraphStyle.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
-                        let scale = max(0.01, baseFont.pointSize / max(currentFont.pointSize, 0.01))
-                        style.firstLineHeadIndent *= scale
-                        style.headIndent *= scale
-                        style.tailIndent *= scale
-                        style.paragraphSpacing *= scale
-                        style.paragraphSpacingBefore *= scale
-                        style.lineSpacing *= scale
-                        mutable.addAttribute(.paragraphStyle, value: style, range: range)
-                    }
-                }
-
-                return mutable
-            }
-
             func drawContinuationNote() {
                 let note = "Continued on next page"
                 let noteRect = CGRect(x: contentLeftX + 18, y: contentBottomY - continuationReserve, width: contentWidth - 18, height: 12)
@@ -251,16 +82,199 @@ enum PlanPDFBuilder {
                 ])
             }
 
+            func continueOnNextPage() {
+                drawContinuationNote()
+                context.beginPage()
+                drawLetterhead(on: context)
+                y = contentStartY
+            }
+
+            // MARK: Splitting (TextKit line boundaries — a break can never land mid-word)
+
+            /// Character count that fits within `maxHeight` at `width`, measured by
+            /// laying the string into a real text container so the cut always lands
+            /// on a line-fragment boundary.
+            func lineBreakFitLength(for attributedString: NSAttributedString, width: CGFloat, maxHeight: CGFloat) -> Int {
+                guard attributedString.length > 0, maxHeight > 0 else { return 0 }
+                let storage = NSTextStorage(attributedString: attributedString)
+                let layout = NSLayoutManager()
+                storage.addLayoutManager(layout)
+                let container = NSTextContainer(size: CGSize(width: width, height: maxHeight))
+                container.lineFragmentPadding = 0
+                layout.addTextContainer(container)
+                layout.ensureLayout(for: container)
+                let glyphRange = layout.glyphRange(for: container)
+                return layout.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil).length
+            }
+
+            /// Length of just the first laid-out line — the overflow guard when not
+            /// even one line fits on an otherwise empty page.
+            func firstLineLength(of attributedString: NSAttributedString, width: CGFloat) -> Int {
+                guard attributedString.length > 0 else { return 0 }
+                let storage = NSTextStorage(attributedString: attributedString)
+                let layout = NSLayoutManager()
+                storage.addLayoutManager(layout)
+                let container = NSTextContainer(size: CGSize(width: width, height: .greatestFiniteMagnitude))
+                container.lineFragmentPadding = 0
+                container.maximumNumberOfLines = 1
+                layout.addTextContainer(container)
+                layout.ensureLayout(for: container)
+                let glyphRange = layout.glyphRange(for: container)
+                return layout.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil).length
+            }
+
+            /// Widow/orphan check on the PARAGRAPH the cut lands in (not the whole
+            /// chunk): the fragment kept on this page must be at least
+            /// `minimumLinesAtBottom` lines and the fragment carried to the next page
+            /// at least `minimumLinesAtTop`.
+            func splitLeavesCleanFragments(
+                _ attributedString: NSAttributedString,
+                splitIndex: Int,
+                width: CGFloat,
+                minimumLinesAtBottom: Int,
+                minimumLinesAtTop: Int
+            ) -> Bool {
+                let text = attributedString.string as NSString
+                let paragraph = text.paragraphRange(for: NSRange(location: splitIndex, length: 0))
+
+                func fragmentHeight(_ range: NSRange) -> CGFloat {
+                    guard range.length > 0 else { return 0 }
+                    let rect = attributedString.attributedSubstring(from: range).boundingRect(
+                        with: CGSize(width: width, height: .greatestFiniteMagnitude),
+                        options: [.usesLineFragmentOrigin, .usesFontLeading],
+                        context: nil
+                    )
+                    return ceil(rect.height)
+                }
+
+                let headFragment = NSRange(location: paragraph.location, length: splitIndex - paragraph.location)
+                let tailFragment = NSRange(location: splitIndex, length: NSMaxRange(paragraph) - splitIndex)
+                return fragmentHeight(headFragment) >= CGFloat(minimumLinesAtBottom) * bodyLineHeight
+                    && fragmentHeight(tailFragment) >= CGFloat(minimumLinesAtTop) * bodyLineHeight
+            }
+
+            /// Where to cut `attributedString` for this page. Preference order:
+            /// 1. the line-boundary fit when it already lands at a paragraph break;
+            /// 2. the line-boundary fit when the cut paragraph keeps >=3 of its lines
+            ///    here and sends >=2 to the next page (no widows/orphans);
+            /// 3. the last paragraph break that fits (the cut paragraph moves whole);
+            /// 4. the line-boundary fit regardless (the paragraph started this page
+            ///    and is too tall for it — it has to split somewhere).
+            func bestSplitLength(for attributedString: NSAttributedString, width: CGFloat, maxHeight: CGFloat) -> Int {
+                let lineFit = lineBreakFitLength(for: attributedString, width: width, maxHeight: maxHeight)
+                guard lineFit > 0 else { return 0 }
+                if lineFit >= attributedString.length { return lineFit }
+
+                let text = attributedString.string as NSString
+
+                if let scalar = UnicodeScalar(text.character(at: lineFit - 1)),
+                   CharacterSet.newlines.contains(scalar) {
+                    return lineFit
+                }
+
+                if splitLeavesCleanFragments(attributedString, splitIndex: lineFit, width: width,
+                                             minimumLinesAtBottom: 3, minimumLinesAtTop: 2) {
+                    return lineFit
+                }
+
+                let cutParagraphStart = text.paragraphRange(for: NSRange(location: lineFit, length: 0)).location
+                if cutParagraphStart > 0 {
+                    let head = text.substring(to: cutParagraphStart)
+                    if !head.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        return cutParagraphStart
+                    }
+                }
+
+                return lineFit
+            }
+
+            // MARK: Body normalization
+
+            /// Marker detection must stay in step with RichTextEditor's
+            /// `markerPrefix(in:)` — the editor bakes these exact prefixes into the
+            /// text when building lists.
+            func listMarkerPrefix(in trimmedParagraph: String) -> String? {
+                if trimmedParagraph.hasPrefix("• ") {
+                    return "• "
+                }
+                if let range = trimmedParagraph.range(of: "^\\d+\\.\\s", options: .regularExpression) {
+                    return String(trimmedParagraph[range])
+                }
+                return nil
+            }
+
+            func normalizedBodyAttributedString(for attributedString: NSAttributedString, baseFont: UIFont) -> NSAttributedString {
+                let mutable = NSMutableAttributedString(attributedString: attributedString)
+                let fullRange = NSRange(location: 0, length: mutable.length)
+                guard fullRange.length > 0 else { return mutable }
+
+                mutable.enumerateAttribute(.font, in: fullRange, options: []) { value, range, _ in
+                    let currentFont = (value as? UIFont) ?? baseFont
+                    let traits = currentFont.fontDescriptor.symbolicTraits
+                    let normalizedDescriptor = baseFont.fontDescriptor.withSymbolicTraits(traits) ?? baseFont.fontDescriptor
+                    mutable.addAttribute(.font, value: UIFont(descriptor: normalizedDescriptor, size: baseFont.pointSize), range: range)
+                }
+                mutable.addAttribute(.foregroundColor, value: UIColor.black, range: fullRange)
+
+                // ONE paragraph style per paragraph. List paragraphs get their hanging
+                // indent recomputed from the marker's width AT THE PRINT FONT — the
+                // editor measured it at the editor font, and system-font glyph widths
+                // are not proportional across sizes, so scaling the authored value
+                // leaves wrapped lines misaligned.
+                let text = mutable.string as NSString
+                var location = 0
+                while location < mutable.length {
+                    let paragraphRange = text.paragraphRange(for: NSRange(location: location, length: 0))
+                    guard NSMaxRange(paragraphRange) > location else { break }
+
+                    let authoredFont = (attributedString.attribute(.font, at: paragraphRange.location, effectiveRange: nil) as? UIFont) ?? baseFont
+                    let authoredStyle = attributedString.attribute(.paragraphStyle, at: paragraphRange.location, effectiveRange: nil) as? NSParagraphStyle
+                    let scale = baseFont.pointSize / max(authoredFont.pointSize, 1)
+
+                    let style = (authoredStyle?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+                    style.firstLineHeadIndent = (authoredStyle?.firstLineHeadIndent ?? 0) * scale
+                    style.tailIndent = (authoredStyle?.tailIndent ?? 0) * scale
+                    style.paragraphSpacing = (authoredStyle?.paragraphSpacing ?? 0) * scale
+                    style.paragraphSpacingBefore = (authoredStyle?.paragraphSpacingBefore ?? 0) * scale
+                    style.lineSpacing = (authoredStyle?.lineSpacing ?? 0) * scale
+
+                    let trimmedParagraph = text.substring(with: paragraphRange).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if let marker = listMarkerPrefix(in: trimmedParagraph) {
+                        let printFont = (mutable.attribute(.font, at: paragraphRange.location, effectiveRange: nil) as? UIFont) ?? baseFont
+                        let markerWidth = ceil((marker as NSString).size(withAttributes: [.font: printFont]).width)
+                        style.headIndent = style.firstLineHeadIndent + markerWidth
+                    } else {
+                        style.headIndent = (authoredStyle?.headIndent ?? 0) * scale
+                    }
+
+                    mutable.addAttribute(.paragraphStyle, value: style, range: paragraphRange)
+                    location = NSMaxRange(paragraphRange)
+                }
+
+                return mutable
+            }
+
+            /// A chunk that continues a paragraph split mid-text must resume at the
+            /// WRAP column, not back under the list marker: give the tail's first
+            /// paragraph a first-line indent equal to its hanging indent.
+            func fixContinuationIndent(_ tail: NSMutableAttributedString) {
+                guard tail.length > 0 else { return }
+                let firstParagraph = (tail.string as NSString).paragraphRange(for: NSRange(location: 0, length: 0))
+                guard firstParagraph.length > 0 else { return }
+                tail.enumerateAttribute(.paragraphStyle, in: firstParagraph, options: []) { value, range, _ in
+                    guard let style = value as? NSParagraphStyle, style.firstLineHeadIndent != style.headIndent else { return }
+                    let continued = (style.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+                    continued.firstLineHeadIndent = continued.headIndent
+                    tail.addAttribute(.paragraphStyle, value: continued, range: range)
+                }
+            }
+
+            // MARK: Page content
+
             context.beginPage()
             drawLetterhead(on: context)
 
-            var y: CGFloat = contentStartY
-
             let title = reportTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-            let headingFont = UIFont.systemFont(ofSize: 22, weight: .bold)
-            let subheadingFont = UIFont.systemFont(ofSize: 12, weight: .semibold)
-            let bodyFont = UIFont.systemFont(ofSize: 10)
-            let continuationFont = UIFont.italicSystemFont(ofSize: 9)
 
             if !title.isEmpty {
                 let titleRect = CGRect(x: contentLeftX, y: y, width: contentWidth, height: 28)
@@ -280,8 +294,9 @@ enum PlanPDFBuilder {
 
             let trimmedPatientName = patientName.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmedPatientName.isEmpty {
-                let patientRect = CGRect(x: contentLeftX, y: y, width: contentWidth * 0.6, height: 18)
-                let dateRect = CGRect(x: contentLeftX + (contentWidth * 0.4), y: y, width: contentWidth * 0.6, height: 18)
+                let subheadingLineHeight = ceil(subheadingFont.lineHeight) + 4
+                let patientRect = CGRect(x: contentLeftX, y: y, width: contentWidth * 0.6, height: subheadingLineHeight)
+                let dateRect = CGRect(x: contentLeftX + (contentWidth * 0.4), y: y, width: contentWidth * 0.6, height: subheadingLineHeight)
 
                 ("Patient: \(trimmedPatientName)" as NSString).draw(in: patientRect, withAttributes: [
                     .font: subheadingFont,
@@ -301,7 +316,7 @@ enum PlanPDFBuilder {
                     ]
                 )
 
-                y += 28
+                y += subheadingLineHeight + 10
             }
 
             for entry in entries {
@@ -318,12 +333,12 @@ enum PlanPDFBuilder {
                     with: CGSize(width: headerTextWidth, height: .greatestFiniteMagnitude),
                     options: [.usesLineFragmentOrigin, .usesFontLeading],
                     attributes: [
-                        .font: UIFont.systemFont(ofSize: 12, weight: .bold)
+                        .font: entryHeaderFont
                     ],
                     context: nil
                 ).height)
                 let headerHeight: CGFloat = entryTitle.isEmpty ? 0 : max(26, headerTextHeight + (headerTextInsetY * 2))
-                let firstChunkHeight: CGFloat = entryBody.isEmpty ? 0 : 56
+                let firstChunkHeight: CGFloat = entryBody.isEmpty ? 0 : (bodyLineHeight * 4 + continuationReserve)
                 let minimumSectionHeight = headerHeight + (entryTitle.isEmpty ? 0 : 10) + firstChunkHeight
 
                 let availableHeight = contentBottomY - y
@@ -354,7 +369,7 @@ enum PlanPDFBuilder {
                         with: textRect,
                         options: [.usesLineFragmentOrigin, .usesFontLeading],
                         attributes: [
-                            .font: UIFont.systemFont(ofSize: 12, weight: .bold),
+                            .font: entryHeaderFont,
                             .foregroundColor: UIColor.black
                         ],
                         context: nil
@@ -363,58 +378,59 @@ enum PlanPDFBuilder {
                 }
 
                 let bodyWidth = contentWidth - bodyIndent
-                let fullBodyString = bodyAttributed
 
-                if fullBodyString.length > 0 {
-                    let fullBodyRect = fullBodyString.boundingRect(
-                        with: CGSize(width: bodyWidth, height: .greatestFiniteMagnitude),
-                        options: [.usesLineFragmentOrigin, .usesFontLeading],
-                        context: nil
-                    )
-                    let fullBodyHeight = ceil(fullBodyRect.height)
+                if bodyAttributed.length > 0 {
+                    var remaining: NSAttributedString = bodyAttributed
 
-                    if y + fullBodyHeight <= contentBottomY {
-                        fullBodyString.draw(
-                            with: CGRect(x: contentLeftX + bodyIndent, y: y, width: bodyWidth, height: fullBodyHeight + 4),
+                    while remaining.length > 0 {
+                        // Whole remainder fits on this page — draw it and finish the entry.
+                        let remainingHeight = ceil(remaining.boundingRect(
+                            with: CGSize(width: bodyWidth, height: .greatestFiniteMagnitude),
                             options: [.usesLineFragmentOrigin, .usesFontLeading],
                             context: nil
-                        )
-                        y += fullBodyHeight + 10
-                    } else {
-                        var drawLocation = 0
-                        let bodyNSString = fullBodyString.string as NSString
-
-                        while drawLocation < fullBodyString.length {
-                            let availableBodyHeight = contentBottomY - continuationReserve - y
-                            if availableBodyHeight < 24 {
-                                drawContinuationNote()
-                                context.beginPage()
-                                drawLetterhead(on: context)
-                                y = contentStartY
-                                continue
-                            }
-
-                            let remainingRange = NSRange(location: drawLocation, length: fullBodyString.length - drawLocation)
-                            let remainingString = fullBodyString.attributedSubstring(from: remainingRange)
-                            let fitLength = bestSplitLength(
-                                for: remainingString,
-                                width: bodyWidth,
-                                maxHeight: availableBodyHeight,
-                                bodyFont: bodyFont,
-                                minimumLinesAtBottom: 3,
-                                minimumLinesAtTop: 2
+                        ).height)
+                        if y + remainingHeight <= contentBottomY {
+                            remaining.draw(
+                                with: CGRect(x: contentLeftX + bodyIndent, y: y, width: bodyWidth, height: remainingHeight + 4),
+                                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                                context: nil
                             )
+                            y += remainingHeight + 10
+                            break
+                        }
 
-                            if fitLength == 0 {
-                                drawContinuationNote()
-                                context.beginPage()
-                                drawLetterhead(on: context)
-                                y = contentStartY
+                        let pageIsFresh = y <= contentStartY + 0.5
+                        let availableBodyHeight = contentBottomY - continuationReserve - y
+                        if availableBodyHeight < bodyLineHeight * 2 && !pageIsFresh {
+                            continueOnNextPage()
+                            continue
+                        }
+
+                        var fitLength = bestSplitLength(for: remaining, width: bodyWidth, maxHeight: availableBodyHeight)
+                        if fitLength == 0 {
+                            if !pageIsFresh {
+                                continueOnNextPage()
                                 continue
                             }
+                            // A fresh page can't hold even one line (pathological safe
+                            // zone): force the first line and let it overflow rather
+                            // than page-break forever.
+                            fitLength = firstLineLength(of: remaining, width: bodyWidth)
+                            if fitLength == 0 { break }
+                        }
 
-                            let drawRange = NSRange(location: drawLocation, length: fitLength)
-                            let chunk = fullBodyString.attributedSubstring(from: drawRange)
+                        let text = remaining.string as NSString
+
+                        // Don't draw the split's trailing whitespace at the page bottom.
+                        var headEnd = fitLength
+                        while headEnd > 0,
+                              let scalar = UnicodeScalar(text.character(at: headEnd - 1)),
+                              CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                            headEnd -= 1
+                        }
+
+                        if headEnd > 0 {
+                            let chunk = remaining.attributedSubstring(from: NSRange(location: 0, length: headEnd))
                             let usedRect = chunk.boundingRect(
                                 with: CGSize(width: bodyWidth, height: .greatestFiniteMagnitude),
                                 options: [.usesLineFragmentOrigin, .usesFontLeading],
@@ -426,24 +442,38 @@ enum PlanPDFBuilder {
                                 context: nil
                             )
                             y += ceil(usedRect.height) + 10
-                            drawLocation += fitLength
+                        }
 
-                            while drawLocation < fullBodyString.length {
-                                let scalar = bodyNSString.character(at: drawLocation)
-                                if let unicode = UnicodeScalar(scalar), CharacterSet.whitespacesAndNewlines.contains(unicode) {
-                                    drawLocation += 1
-                                } else {
-                                    break
-                                }
-                            }
+                        // Advance past the whitespace consumed by the split, noting
+                        // whether a paragraph break was crossed.
+                        var tailStart = fitLength
+                        while tailStart < remaining.length,
+                              let scalar = UnicodeScalar(text.character(at: tailStart)),
+                              CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                            tailStart += 1
+                        }
+                        guard tailStart < remaining.length else { break }
 
-                            if drawLocation < fullBodyString.length {
-                                drawContinuationNote()
-                                context.beginPage()
-                                drawLetterhead(on: context)
-                                y = contentStartY
+                        var crossedParagraphBreak = false
+                        for index in headEnd..<tailStart {
+                            if let scalar = UnicodeScalar(text.character(at: index)),
+                               CharacterSet.newlines.contains(scalar) {
+                                crossedParagraphBreak = true
+                                break
                             }
                         }
+
+                        let tail = NSMutableAttributedString(
+                            attributedString: remaining.attributedSubstring(
+                                from: NSRange(location: tailStart, length: remaining.length - tailStart)
+                            )
+                        )
+                        if !crossedParagraphBreak {
+                            fixContinuationIndent(tail)
+                        }
+                        remaining = tail
+
+                        continueOnNextPage()
                     }
                 }
             }
